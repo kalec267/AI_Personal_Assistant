@@ -10,6 +10,7 @@ from pathlib import Path
 from .core import UserError
 from .local_voice import LocalVoice
 from .settings import check_voice_speed
+from .speech_text import spoken_text
 
 
 def preferred_voice(voices, saved=""):
@@ -124,7 +125,7 @@ class VoiceRouter:
         with self._lock:
             selected, other = (self.local, self.windows) if name.startswith("local:") else (self.windows, self.local)
             other.stop()
-            return selected.prepare(text, name, speed=speed)
+            return selected.prepare(spoken_text(text), name, speed=speed)
 
     def stop(self):
         with self._lock:

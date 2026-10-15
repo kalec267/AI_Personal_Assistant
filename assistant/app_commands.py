@@ -29,8 +29,9 @@ SETTING_PROPERTIES = {
     "ai_mode": {"type": "string", "enum": ["off", "local", "cloud", "openai"]},
     "ollama_model": {"type": "string"}, "vision_model": {"type": "string"}, "windows_control": {"type": "boolean"},
     "openai_model": {"type": "string"}, "openai_vision_model": {"type": "string"},
+    "reminders_enabled": {"type": "boolean"}, "reminder_minutes": {"type": "integer", "minimum": 1, "maximum": 60},
 }
-SETTING_LABELS = dict(zip(SETTING_PROPERTIES, ("답변 읽기", "음성 속도", "목소리", "호출 감지", "답변 중 호출 감지", "대화 저장", "기억할 대화 수", "기본 볼륨", "시작 시 볼륨 적용", "검색 엔진", "검색 종류", "AI 연결", "Ollama 대화 모델", "Ollama 이미지 모델", "Windows 고급 제어", "OpenAI 대화 모델", "OpenAI 이미지 모델")))
+SETTING_LABELS = dict(zip(SETTING_PROPERTIES, ("답변 읽기", "음성 속도", "목소리", "호출 감지", "답변 중 호출 감지", "대화 저장", "기억할 대화 수", "기본 볼륨", "시작 시 볼륨 적용", "검색 엔진", "검색 종류", "AI 연결", "Ollama 대화 모델", "Ollama 이미지 모델", "Windows 고급 제어", "OpenAI 대화 모델", "OpenAI 이미지 모델", "일정 알림", "일정 알림 사전 시간")))
 
 
 def describe_settings(values):
@@ -50,7 +51,7 @@ SELECTOR = {"event_id": {"type": "string"}, "title": {"type": "string", "descrip
             "start": {"type": "string", "description": "기존 일정 시작 시각. PC 현지 ISO 날짜·시간"}}
 APP_ALLOWED = {
     "delete_event": set(SELECTOR), "update_event": set(SELECTOR) | {"new_title", "new_start", "new_end"},
-    "undo_calendar": {"kind"}, "export_calendar": set(), "get_app_state": set(),
+    "undo_calendar": {"kind"}, "export_calendar": set(), "get_app_state": set(), "daily_briefing": set(),
     "change_settings": set(SETTING_PROPERTIES),
     "manage_program": {"operation", "app_id", "name", "new_name"},
     "control_app": {"action", "tab", "index", "day", "persist"},
@@ -59,6 +60,7 @@ APP_ALLOWED = {
 
 def app_tools(tool):
     return [
+        tool("daily_briefing", "현재 시각·오늘 일정·진행 중/남은 일정·시간 겹침·다음 일정 브리핑. 저장된 일정에만 근거하며 날씨·뉴스를 조회하지 않음", {}, []),
         tool("delete_event", "저장된 일정 한 개 삭제. 제목·날짜·시각 또는 ID로 지정. 여러 후보면 질문하며 삭제는 되돌릴 수 있음", SELECTOR, []),
         tool("update_event", "기존 일정의 제목·시작·종료 변경. 기존 대상 선택과 새 값을 구분. 시작만 변경하면 기존 길이 유지", {
             **SELECTOR, **{key: {"type": "string"} for key in ("new_title", "new_start", "new_end")}}, []),
@@ -71,7 +73,7 @@ def app_tools(tool):
             "app_id": {"type": "string"}, "name": {"type": "string"}, "new_name": {"type": "string"}}, ["operation"]),
         tool("control_app", "앱 화면·첨부·음성·설치·연결·대화·종료 제어. API 키는 직접 발화하거나 도구에 넣지 않고 manage_api_key로 가려진 설정 창에서 입력. 파일 선택·UAC는 Windows 창 사용", {
             "action": {"type": "string", "enum": list(UI_ACTIONS)},
-            "tab": {"type": "string", "enum": ["ai", "programs", "sound", "windows"]},
+            "tab": {"type": "string", "enum": ["ai", "programs", "sound", "windows", "routines"]},
             "index": {"type": "integer", "minimum": 1, "maximum": 5},
             "persist": {"type": "boolean", "description": "manage_api_key에서 새 키를 Windows 사용자에 암호화 저장할지 선택"},
             "day": {"type": "string", "description": "YYYY-MM-DD"}}, ["action"]),
@@ -234,7 +236,7 @@ def validate_app_action(name, args, programs, calendar):
         allowed = {"action"} | {"open_settings": {"tab"}, "show_calendar": {"day"}, "remove_attachment": {"index"}, "manage_api_key": {"persist"}}.get(kind, set())
         if args.keys() - allowed:
             raise UserError("화면 기능에 맞지 않는 인자입니다.")
-        if "tab" in args and (not isinstance(args["tab"], str) or args["tab"] not in {"ai", "programs", "sound", "windows"}):
+        if "tab" in args and (not isinstance(args["tab"], str) or args["tab"] not in {"ai", "programs", "sound", "windows", "routines"}):
             raise UserError("설정 탭이 올바르지 않아요.")
         if kind == "remove_attachment" and (type(args.get("index")) is not int or not 1 <= args["index"] <= 5):
             raise UserError("제거할 첨부 번호를 1~5로 지정하세요.")
@@ -244,7 +246,7 @@ def validate_app_action(name, args, programs, calendar):
             action["args"]["day"] = checked_day(args["day"])
         summary = UI_ACTIONS[kind]
     else:
-        summary = "캘린더 파일 내보내기" if name == "export_calendar" else "앱 상태·설정 조회"
+        summary = {"export_calendar": "캘린더 파일 내보내기", "daily_briefing": "오늘 브리핑"}.get(name, "앱 상태·설정 조회")
     action["summary"] = summary
     return action
 
@@ -285,6 +287,7 @@ def parse_app_command(text, options, view=None):
         return None
     suffix = r"(?:해(?:줘|주세요)?|줘|주세요)?"
     simple = {
+        r"(?:오늘)?(?:일정)?브리핑" + suffix: ("daily_briefing", {}),
         r"(?:음소거해제|소리켜)(?:줘|주세요)?": ("set_volume", {"mode": "unmute"}),
         r"(?:음소거|소리꺼)(?:해줘|해주세요|줘|주세요)?": ("set_volume", {"mode": "mute"}),
         r"(?:볼륨|음량|소리)(?:을|를)?(?:올려|높여|크게)(?:줘|주세요|해줘)?": ("set_volume", {"mode": "up"}),
@@ -330,9 +333,9 @@ def parse_app_command(text, options, view=None):
         intent = parse_command(text)
         if intent["action"] == "create":
             return call("create_event", **{key: intent[key] for key in ("title", "start", "end")})
-    match = re.fullmatch(r"(?:(AI|프로그램|소리|음성|Windows|윈도우)\s*)?설정(?:\s*창)?(?:을|를)?\s*열어\s*(?:줘|주세요)?", text, re.IGNORECASE)
+    match = re.fullmatch(r"(?:(AI|프로그램|소리|음성|Windows|윈도우|루틴)\s*)?설정(?:\s*창)?(?:을|를)?\s*열어\s*(?:줘|주세요)?", text, re.IGNORECASE)
     if match:
-        return call("control_app", action="open_settings", tab={"프로그램": "programs", "소리": "sound", "음성": "sound", "windows": "windows", "윈도우": "windows"}.get((match[1] or "").lower(), "ai"))
+        return call("control_app", action="open_settings", tab={"프로그램": "programs", "소리": "sound", "음성": "sound", "windows": "windows", "윈도우": "windows", "루틴": "routines"}.get((match[1] or "").lower(), "ai"))
     match = re.fullmatch(r"(?:음성|목소리)(?:출력)?속도(?:를|는)?(\d+(?:\.\d+)?)배?(?:로)?(?:설정|변경|조절)?" + suffix, key)
     if match:
         return call("change_settings", voice_speed=float(match[1]))
@@ -342,10 +345,13 @@ def parse_app_command(text, options, view=None):
     match = re.fullmatch(r"(?:목소리|음성)(?:을|를)?(?:여성|여자)?([1-5])번(?:으로)?(?:설정|변경|바꿔)?" + suffix, key)
     if match:
         return call("change_settings", voice=f"local:F{match[1]}")
-    match = re.fullmatch(r"(답변읽기|음성출력|호출감지|호출어감지|대화저장)(?:를|을)?(켜|꺼)(?:줘|주세요)?", key)
+    match = re.fullmatch(r"(답변읽기|음성출력|호출감지|호출어감지|대화저장|일정알림)(?:를|을)?(켜|꺼)(?:줘|주세요)?", key)
     if match:
-        setting = {"답변읽기": "speak", "음성출력": "speak", "호출감지": "wake_enabled", "호출어감지": "wake_enabled", "대화저장": "remember_chat"}[match[1]]
+        setting = {"답변읽기": "speak", "음성출력": "speak", "호출감지": "wake_enabled", "호출어감지": "wake_enabled", "대화저장": "remember_chat", "일정알림": "reminders_enabled"}[match[1]]
         return call("change_settings", **{setting: match[2] == "켜"})
+    match = re.fullmatch(r"일정알림(?:을|를)?(\d+)분전(?:으로|에)?(?:설정|변경|바꿔)?" + suffix, key)
+    if match:
+        return call("change_settings", reminders_enabled=True, reminder_minutes=int(match[1]))
     match = re.fullmatch(r"(?:기본)?검색(?:엔진|서비스)(?:을|를)?(구글|네이버)(?:로|으로)(?:변경|설정|바꿔)" + suffix, key)
     if match:
         return call("change_settings", search_provider="google" if match[1] == "구글" else "naver")

@@ -9,6 +9,7 @@ from . import desktop, windows_control
 from .core import UserError
 from .settings import load_settings, save_settings, model_settings, selected_model
 from .theme import PAPER, BLUE, MUTED
+from .routines_page import RoutinesPage
 
 MODES = {"기본 명령 (AI 끔)": "off", "Ollama 로컬 · API 키 불필요": "local", "Ollama 클라우드 · API 키 필요": "cloud",
          "ChatGPT · OpenAI API 키 필요": "openai"}
@@ -48,6 +49,8 @@ class ConfigDialog(tk.Toplevel):
         self.persist = tk.BooleanVar(value=os.name == "nt")
         self.remember = tk.BooleanVar(value=options.get("remember_chat", False))
         self.history_turns = tk.IntVar(value=options.get("history_turns", 10))
+        self.reminders_enabled = tk.BooleanVar(value=options.get("reminders_enabled", True))
+        self.reminder_minutes = tk.IntVar(value=options.get("reminder_minutes", 10))
         self.speak = tk.BooleanVar(value=app.speak_var.get())
         self.wake_enabled = tk.BooleanVar(value=options.get("wake_enabled", True))
         self.wake_during_speech = tk.BooleanVar(value=options.get("wake_during_speech", False))
@@ -78,13 +81,14 @@ class ConfigDialog(tk.Toplevel):
         ttk.Label(footer, textvariable=self.save_feedback, wraplength=640).pack(anchor="w", pady=(7, 0))
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True, padx=18, pady=(18, 0))
-        pages = [SettingsPage(self.notebook) for _ in range(4)]
-        for page, name in zip(pages, ("AI · 대화", "프로그램", "소리 · 음성", "Windows 제어")):
+        pages = [SettingsPage(self.notebook) for _ in range(5)]
+        for page, name in zip(pages, ("AI · 대화", "프로그램", "소리 · 음성", "Windows 제어", "루틴")):
             self.notebook.add(page, text=name)
         self._build_ai(pages[0].content)
         self._build_programs(pages[1].content)
         self._build_sound(pages[2].content)
         self._build_windows(pages[3].content)
+        self.routines_page = RoutinesPage(pages[4].content, app)
         self.refresh_programs()
         self.refresh_voices()
         self.protocol("WM_DELETE_WINDOW", self.close)
@@ -121,6 +125,14 @@ class ConfigDialog(tk.Toplevel):
         ttk.Label(frame, text="선택하지 않아도 앱을 사용하는 동안 최근 대화를 기억합니다.\n저장 기록은 암호화되지 않은 개인 파일이며, 클라우드 모드에서는 최근 대화도 전송됩니다.\n모델·연결 방식 변경 또는 ‘새 대화’를 누르면 문맥을 초기화합니다.", wraplength=580).pack(anchor="w", pady=8)
         ttk.Label(frame, text="클라우드 연결에서는 질문·최근 대화와 첨부 내용·이미지가 선택한 AI 서비스로 전송됩니다.", wraplength=580).pack(anchor="w", pady=5)
         ttk.Button(frame, text="새 대화 시작", command=self.app.new_conversation).pack(anchor="w", pady=5)
+        ttk.Separator(frame).pack(fill="x", pady=12)
+        ttk.Checkbutton(frame, text="앱 실행 중 일정 시작 전 먼저 알려주기", variable=self.reminders_enabled).pack(anchor="w", pady=5)
+        reminder_row = ttk.Frame(frame)
+        reminder_row.pack(fill="x", pady=5)
+        ttk.Label(reminder_row, text="일정 시작").pack(side="left")
+        ttk.Spinbox(reminder_row, from_=1, to=60, textvariable=self.reminder_minutes, width=5).pack(side="left", padx=8)
+        ttk.Label(reminder_row, text="분 전 · 1~60분").pack(side="left")
+        ttk.Label(frame, text="대화에 알림을 표시하며 ‘답변을 음성으로 읽기’가 켜져 있으면 여성 음성으로 읽습니다.\n명령·녹음·음성 재생 중에는 기다렸다가 알립니다. 앱을 종료하면 알림도 중지됩니다.", wraplength=580).pack(anchor="w", pady=5)
         ttk.Label(frame, textvariable=self.feedback, wraplength=580).pack(anchor="w", pady=12)
 
     def _build_programs(self, frame):
@@ -291,6 +303,8 @@ class ConfigDialog(tk.Toplevel):
                 raise UserError("음성 출력 속도는 0.5~2.0배로 설정하세요.")
             if not 1 <= turns <= 20 or not 0 <= volume <= 100:
                 raise UserError("최근 대화 수는 1~20, 볼륨은 0~100으로 설정하세요.")
+            if not 1 <= self.reminder_minutes.get() <= 60:
+                raise UserError("일정 알림 시간은 1~60분 전으로 설정하세요.")
             mode = MODES[self.mode.get()]
             credentials = self.app.service.credentials_for(mode)
             if self.key.get().strip():
@@ -300,7 +314,8 @@ class ConfigDialog(tk.Toplevel):
             save_settings(self.app.data_dir, self.voice_var.get(), self.speak.get(), ai_mode=mode,
                           **{model_key: model, vision_key: vision_model}, remember_chat=self.remember.get(), history_turns=turns,
                           volume=volume, apply_volume_on_start=self.start_volume.get(), windows_control=self.windows_access.get(),
-                          voice_speed=speed, wake_enabled=self.wake_enabled.get(), wake_during_speech=self.wake_during_speech.get())
+                          voice_speed=speed, wake_enabled=self.wake_enabled.get(), wake_during_speech=self.wake_during_speech.get(),
+                          reminders_enabled=self.reminders_enabled.get(), reminder_minutes=self.reminder_minutes.get())
             self.app.apply_settings()
             self.feedback.set("사용자 설정 저장 완료 · " + credentials.status())
             self.save_feedback.set("사용자 설정을 저장했어요. 재실행 후에도 유지됩니다.")
@@ -351,6 +366,8 @@ class ConfigDialog(tk.Toplevel):
             self.program_empty.pack_forget()
         else:
             self.program_empty.pack(after=self.program_list, anchor="w", pady=8)
+        if hasattr(self, "routines_page"):
+            self.routines_page.refresh_programs()
 
     def choose_program(self):
         filename = filedialog.askopenfilename(parent=self, title="실행할 프로그램 선택", filetypes=[("Windows 실행 파일", "*.exe")])
@@ -393,7 +410,8 @@ class ConfigDialog(tk.Toplevel):
         variables = {"voice": self.voice_var, "speak": self.speak, "voice_speed": self.voice_speed,
                      "wake_enabled": self.wake_enabled, "wake_during_speech": self.wake_during_speech,
                      "remember_chat": self.remember, "history_turns": self.history_turns, "volume": self.volume,
-                     "apply_volume_on_start": self.start_volume, "windows_control": self.windows_access}
+                     "apply_volume_on_start": self.start_volume, "windows_control": self.windows_access,
+                     "reminders_enabled": self.reminders_enabled, "reminder_minutes": self.reminder_minutes}
         if "ai_mode" in keys:
             self.mode.set(next(label for label, mode in MODES.items() if mode == options.get("ai_mode", "off")))
         model_key, vision_key, _ = model_settings(MODES[self.mode.get()])

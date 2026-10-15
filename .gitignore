@@ -11,6 +11,8 @@ dist/
 conversation.json
 conversation-*.tmp
 programs.json
+routines.json
+routines-*.tmp
 settings.json
 calendar.sqlite3*
 models/

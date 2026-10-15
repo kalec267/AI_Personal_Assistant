@@ -173,3 +173,41 @@ class SpeechInterruptTests(unittest.TestCase):
             with patch.object(driver, "synthesize") as synthesize:
                 work()
                 synthesize.assert_not_called()
+
+    def test_first_segment_plays_before_prefetch_finishes_and_stop_cancels_the_rest(self):
+        with tempfile.TemporaryDirectory() as folder:
+            driver = LocalVoice(folder)
+            second_started, release = threading.Event(), threading.Event()
+            sound = SimpleNamespace(SND_FILENAME=1, SND_ASYNC=2, SND_NODEFAULT=4, PlaySound=MagicMock())
+            generated, errors = [], []
+
+            def synthesize(text, name, filename, **kwargs):
+                generated.append(text)
+                if len(generated) == 2:
+                    self.assertTrue(sound.PlaySound.called)
+                    second_started.set()
+                    if not release.wait(3):
+                        raise AssertionError("Prefetch was not released")
+                self.write_wav(filename)
+
+            def run():
+                try:
+                    driver.speak("안녕하세요. 오늘 일정을 알려드릴게요. " * 25, "local:F2")
+                except Exception as error:
+                    errors.append(error)
+
+            with patch("assistant.local_voice.os", SimpleNamespace(name="nt")), patch.dict("sys.modules", {"winsound": sound}), patch.object(driver, "synthesize", side_effect=synthesize):
+                worker = threading.Thread(target=run)
+                worker.start()
+                try:
+                    self.assertTrue(second_started.wait(3))
+                    driver.stop()
+                    self.assertFalse(release.is_set())
+                finally:
+                    release.set()
+                    worker.join(3)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(errors, [])
+                played = [call.args[0] for call in sound.PlaySound.call_args_list if call.args[0] is not None]
+                self.assertEqual(len(played), 1)
+                self.assertFalse(Path(played[0]).exists())

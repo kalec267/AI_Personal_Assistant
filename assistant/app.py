@@ -5,9 +5,12 @@ import argparse
 import datetime as dt
 import functools
 import gc
+import math
 import os
 import queue
+import sqlite3
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -103,6 +106,9 @@ class LunaApp:
         self.wake_note = tk.StringVar(value="호출어 감지 준비 중…")
         self.voice_items = []
         self.installing_voice = False
+        self.reminder_loading = False
+        self.pending_reminders = []
+        self.next_reminder_check = time.monotonic() + 2
         self.last_dialog = None
         self.config_dialog = None
         self.attachment_dialog = None
@@ -113,6 +119,7 @@ class LunaApp:
         self.command_var = tk.StringVar()
         self.day_var = tk.StringVar(value=dt.date.today().isoformat())
         self.status_var = tk.StringVar(value="준비됐어요. 무엇을 도와드릴까요?")
+        self.assistant_state = tk.StringVar(value="대기")
         self.voice_var = tk.StringVar(value=self.settings.get("voice", ""))
         self.voice_note = tk.StringVar(value="Windows 음성 목록을 불러오는 중…")
         self.speak_var = tk.BooleanVar(value=self.settings.get("speak", True))
@@ -157,6 +164,9 @@ class LunaApp:
         header = tk.Frame(self.root, bg=BG, padx=28, pady=18)
         header.grid(row=0, column=0, sticky="ew")
         self.label(header, "LUNA ✦", size=23, bold=True).pack(side="left")
+        self.state_canvas = tk.Canvas(header, width=94, height=30, bg=BG, highlightthickness=0)
+        self.state_canvas.pack(side="left", padx=(18, 5))
+        tk.Label(header, textvariable=self.assistant_state, bg=BG, fg=BLUE, font=("Malgun Gothic", 9, "bold")).pack(side="left")
         self.settings_button = self.button(header, "설정", self.open_config)
         self.settings_button.pack(side="right")
         tk.Label(header, textvariable=self.mode_var, bg=BG, fg=BLUE, font=("Malgun Gothic", 9)).pack(side="right", padx=15)
@@ -191,7 +201,8 @@ class LunaApp:
         suggestions = tk.Frame(left, bg=PAPER)
         suggestions.pack(fill="x", pady=10)
         self.button(suggestions, "회의 일정 추가", lambda: self.submit("내일 오후 3시 팀 회의 일정 추가")).pack(side="left", padx=(0, 7))
-        self.button(suggestions, "오늘 일정", lambda: self.submit("오늘 일정 보여줘")).pack(side="left")
+        self.briefing_button = self.button(suggestions, "오늘 브리핑", lambda: self.submit("오늘 브리핑해줘"))
+        self.briefing_button.pack(side="left")
         self.button(suggestions, "새 대화", self.new_conversation).pack(side="right")
         attachment_row = tk.Frame(left, bg=PAPER)
         attachment_row.pack(fill="x", pady=(0, 6))
@@ -376,7 +387,59 @@ class LunaApp:
         self.sync_wake_availability()
         self.poll_wake()
         self.sync_wake_availability()
+        self.poll_reminders()
+        self.update_assistant_state()
         self._poll_id = self.root.after(60, self._poll)
+
+    def update_assistant_state(self):
+        state = ("듣는 중" if self.listening else "처리 중" if self.command_busy else "말하는 중" if self.speech_active
+                 else "음성 점검" if self.audio_checking else "호출 오류" if self.wake is not None and self.wake.failed
+                 else "호출 대기" if self.wake is not None and self.wake.available.is_set() else "대기")
+        self.assistant_state.set(state)
+        self.state_canvas.delete("all")
+        active = state not in {"대기", "호출 대기", "호출 오류"}
+        color = "#b04b65" if state == "호출 오류" else BLUE if active else "#c9c2ec"
+        phase = time.monotonic() * (5 if active else 2)
+        for index in range(10):
+            height = 5 + (20 if active else 6) * abs(math.sin(phase + index * .55))
+            x = 3 + index * 9
+            self.state_canvas.create_line(x, 15-height/2, x, 15+height/2, width=4,
+                                          fill=color, capstyle="round")
+
+    def _notification_idle(self):
+        return not (self.command_busy or self.listening or self.speech_active or self.audio_checking or self.root.grab_current())
+
+    def poll_reminders(self):
+        if not self.settings.get("reminders_enabled", True):
+            self.pending_reminders = []
+            return
+        if not self._notification_idle():
+            return
+        if self.pending_reminders:
+            candidates, self.pending_reminders = self.pending_reminders, []
+            try:
+                message = self.service.consume_reminders(candidates)
+            except (OSError, sqlite3.Error):
+                self.next_reminder_check = time.monotonic() + 30
+                self.status_var.set("일정 알림 저장소에 접근하지 못했어요. 잠시 후 다시 확인합니다.")
+                return
+            if message:
+                self.append_message("루나", message)
+                self.status_var.set("일정 알림")
+                self.say(message)
+            return
+        if not self.reminder_loading and time.monotonic() >= self.next_reminder_check:
+            self.reminder_loading = True
+            self.next_reminder_check = time.monotonic() + 15
+            self.run_task(self.service.due_reminders, self._reminders_ready, self._reminders_failed)
+
+    def _reminders_ready(self, events):
+        self.reminder_loading = False
+        self.pending_reminders = events
+
+    def _reminders_failed(self, _error):
+        self.reminder_loading = False
+        self.next_reminder_check = time.monotonic() + 30
 
     def show_error(self, error):
         self.status_var.set(str(error).splitlines()[0][:160] if str(error) else "처리 중 오류가 발생했어요.")
@@ -580,8 +643,8 @@ class LunaApp:
             self.config_dialog.lift()
         else:
             self.config_dialog = ConfigDialog(self)
-        if tab in {"ai", "programs", "sound", "windows"}:
-            self.config_dialog.notebook.select({"ai": 0, "programs": 1, "sound": 2, "windows": 3}[tab])
+        if tab in {"ai", "programs", "sound", "windows", "routines"}:
+            self.config_dialog.notebook.select({"ai": 0, "programs": 1, "sound": 2, "windows": 3, "routines": 4}[tab])
 
     def open_search(self, spec=None):
         if spec:

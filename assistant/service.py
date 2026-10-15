@@ -19,6 +19,8 @@ from .history import ConversationMemory
 from .attachments import validate_attachments
 from .search import parse_search
 from .app_commands import APP_ALLOWED, describe_settings, parse_app_command
+from .briefing import daily_briefing, reminder_message
+from .routines import Routines
 
 
 class AssistantService:
@@ -28,6 +30,7 @@ class AssistantService:
         self.credentials = Credentials(data_dir)
         self.openai_credentials = Credentials(data_dir, "openai")
         self.programs = Programs(data_dir)
+        self.routines = Routines(data_dir, self.programs)
         self.ollama = Ollama(self.credentials)
         self.openai = OpenAI(self.openai_credentials)
         self._proposals = {}
@@ -62,6 +65,20 @@ class AssistantService:
         end = (day + dt.timedelta(days=1)).isoformat() + "T00:00"
         return [event for event in self.calendar.list() if event["start"] < end and event["end"] > start]
 
+    def due_reminders(self, now=None):
+        options = load_settings(self.data_dir)
+        if not options.get("reminders_enabled", True):
+            return []
+        return self.calendar.due_reminders(now or dt.datetime.now(), options.get("reminder_minutes", 10))
+
+    def consume_reminders(self, candidates, now=None):
+        options = load_settings(self.data_dir)
+        if not options.get("reminders_enabled", True):
+            return ""
+        now = now or dt.datetime.now()
+        events = self.calendar.consume_reminders(candidates, now, options.get("reminder_minutes", 10))
+        return reminder_message(events, now)
+
     def execute(self, text, *, attachments=(), progress=None, view=None):
         options = load_settings(self.data_dir)
         self.sync_settings(options)
@@ -83,12 +100,19 @@ class AssistantService:
                                           search["label"] + " 결과 페이지 열기를 준비했습니다. 기사·영상 내용은 조회하지 않았습니다.")
             return result
         program = self.programs.resolve(text)
+        routine = self.routines.resolve(text)
+        if program and routine:
+            raise UserError("프로그램과 루틴에 같은 이름이 등록되어 있어요. 설정에서 서로 구분되는 이름으로 바꿔 주세요.")
         if program:
             if options.get("ai_mode", "off") != "off":
                 with self._lock:
                     return self._interpret_result(text, {"content": "", "calls": [{"function": {
                         "name": "launch_program", "arguments": {"app_id": program["id"]}}}]}, self.history.generation)
             return {"message": self.programs.launch(program["id"])}
+        if routine:
+            with self._lock:
+                return self._interpret_result(text, {"content": "", "calls": [{"function": {
+                    "name": "run_routine", "arguments": {"name": routine["name"]}}}]}, self.history.generation)
         if attachments:
             validate_attachments(attachments)
             if options.get("ai_mode", "off") == "off":
@@ -137,8 +161,9 @@ class AssistantService:
             result = client.analyze(mode, analysis_model, text, attachments, history=messages, progress=progress,
                                          cancelled=lambda: generation != self.history.snapshot()[0])
         else:
+            context = dict(view or {}, routines=self.routines.catalog())
             result = client.request(mode, model, text, self.programs.catalog(), history=messages,
-                                         allow_windows=options.get("windows_control", False), app_context=view)
+                                    allow_windows=options.get("windows_control", False), app_context=context)
         with self._lock:
             if generation != self.history.generation:
                 raise UserError("대화나 연결 설정이 변경되어 이전 응답을 취소했어요. 다시 요청해 주세요.")
@@ -161,12 +186,22 @@ class AssistantService:
     def _interpret_result(self, text, result, generation):
         if not result["calls"]:
             return self._remember(text, {"message": result["content"]}, generation)
-        actions = validate_calls(result["calls"], self.programs,
+        expanded = []
+        for call in result["calls"]:
+            function = call.get("function") if isinstance(call, dict) else None
+            if isinstance(function, dict) and function.get("name") == "run_routine":
+                args = function.get("arguments")
+                if not isinstance(args, dict) or set(args) != {"name"} or not isinstance(args["name"], str):
+                    raise UserError("실행할 루틴 이름을 하나로 지정하세요.")
+                expanded.extend(self.routines.get(args["name"]))
+            else:
+                expanded.append(call)
+        actions = validate_calls(expanded, self.programs,
                                  allow_windows=load_settings(self.data_dir).get("windows_control", False), calendar=self.calendar)
         if len(actions) == 1 and actions[0]["name"] == "create_event":
             return self._remember(text, {"message": "일정 초안을 만들었어요. 날짜와 시간을 확인하고 저장해 주세요.", "draft": actions[0]["args"]},
                                   generation, actions[0]["summary"] + " · 아직 저장하지 않은 초안입니다.")
-        if all(action["name"] in {"list_events", "get_app_state"} or action["name"] == "manage_program" and action["args"]["operation"] == "list" for action in actions):
+        if all(action["name"] in {"list_events", "get_app_state", "daily_briefing"} or action["name"] == "manage_program" and action["args"]["operation"] == "list" for action in actions):
             return self._remember(text, {"message": "\n".join(self._run_action(action)["message"] for action in actions)}, generation)
         identifier = secrets.token_urlsafe(24)
         now = time.monotonic()
@@ -194,6 +229,8 @@ class AssistantService:
 
     def _run_action(self, action):
         name, args = action["name"], action["args"]
+        if name == "daily_briefing":
+            return {"message": daily_briefing(self.calendar.list())}
         if name == "list_events":
             return {"message": self._list_action(action)}
         if name == "delete_event":
@@ -214,7 +251,10 @@ class AssistantService:
             return {"message": f"캘린더를 저장했어요: {path}", "export_path": str(path)}
         if name == "get_app_state":
             options = load_settings(self.data_dir)
-            return {"message": "현재 사용자 설정: " + describe_settings(options) + "\n등록 프로그램: " + (", ".join(item["name"] for item in self.programs.catalog()) or "없음") + "\n" + self._list_action({"args": {}})}
+            options.setdefault("reminders_enabled", True)
+            options.setdefault("reminder_minutes", 10)
+            return {"message": "현재 사용자 설정: " + describe_settings(options) + "\n등록 프로그램: " + (", ".join(item["name"] for item in self.programs.catalog()) or "없음") +
+                    "\n등록 루틴: " + (", ".join(item["name"] for item in self.routines.catalog()) or "없음") + "\n" + self._list_action({"args": {}})}
         if name == "change_settings":
             current = load_settings(self.data_dir)
             new_mode = args.get("ai_mode")

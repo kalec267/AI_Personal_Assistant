@@ -10,12 +10,14 @@ import sys
 import tarfile
 import tempfile
 import threading
+import time
 import urllib.request
 import wave
 from pathlib import Path
 
 from .core import UserError
 from .settings import default_data_dir, check_voice_speed
+from .speech_text import speech_chunks
 
 MODEL_NAME = "sherpa-onnx-supertonic-tts-int8-2026-03-06"
 MODEL_URL = f"https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/{MODEL_NAME}.tar.bz2"
@@ -183,32 +185,35 @@ class LocalVoice:
         if os.name != "nt":
             raise UserError("앱 음성 재생은 Windows에서 지원합니다.")
         with tempfile.TemporaryDirectory(prefix="luna-speech-") as folder:
-            filename = Path(folder) / "speech.wav"
-            with self._lock:
-                if cancelled.is_set():
-                    return
-                self.synthesize(text, name, filename, speed=speed)
-            if cancelled.is_set():
-                return
-            with wave.open(str(filename), "rb") as audio:
-                duration = audio.getnframes() / audio.getframerate()
-            with self._state_lock:
-                if self._closed or cancelled.is_set():
-                    return
-                import winsound
-                # Start and stop share a short lock. Synchronous playback here
-                # would prevent a new command from stopping the current sound.
-                try:
-                    winsound.PlaySound(str(filename), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
-                except RuntimeError:
-                    raise UserError("음성을 만들었지만 재생하지 못했어요. Windows 기본 출력 장치·앱별 볼륨·음소거를 확인하세요.") from None
-                self._playing = True
+            deadline = 0.0
             try:
-                # Keep the temporary WAV alive until playback ends or is stopped.
-                cancelled.wait(duration + 0.2)
+                for index, chunk in enumerate(speech_chunks(text)):
+                    filename = Path(folder) / f"speech-{index}.wav"
+                    # Synthesize the next segment while the preceding WAV plays.
+                    # Only this worker uses the engine; stop() never waits here.
+                    with self._lock:
+                        if cancelled.is_set():
+                            return
+                        self.synthesize(chunk, name, filename, speed=speed)
+                    if cancelled.wait(max(0.0, deadline - time.monotonic())):
+                        return
+                    with wave.open(str(filename), "rb") as audio:
+                        duration = audio.getnframes() / audio.getframerate()
+                    with self._state_lock:
+                        if self._closed or cancelled.is_set():
+                            return
+                        import winsound
+                        try:
+                            winsound.PlaySound(str(filename), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+                        except RuntimeError:
+                            raise UserError("음성을 만들었지만 재생하지 못했어요. Windows 기본 출력 장치·앱별 볼륨·음소거를 확인하세요.") from None
+                        self._playing = True
+                        deadline = time.monotonic() + duration + 0.03
+                cancelled.wait(max(0.0, deadline - time.monotonic()) + 0.1)
             finally:
                 with self._state_lock:
                     if generation == self._generation and self._playing:
+                        import winsound
                         winsound.PlaySound(None, 0)
                         self._playing = False
 

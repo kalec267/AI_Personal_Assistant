@@ -17,6 +17,7 @@ def tool(name, description, properties, required):
 
 def tools(catalog, *, allow_windows=False):
     available = [
+        tool("run_routine", "사용자가 설정에 저장한 루틴 실행. 앱 상태 routines의 실제 이름만 사용. 루틴과 다른 동작을 합해 최대 5개 동작", {"name": {"type": "string"}}, ["name"]),
         tool("launch_program", "등록된 프로그램 실행", {"app_id": {"type": "string", "enum": [app["id"] for app in catalog]}}, ["app_id"]),
         tool("set_volume", "기본 오디오 장치 볼륨·음소거 제어", {
             "mode": {"type": "string", "enum": ["set", "up", "down", "mute", "unmute"]},
@@ -67,6 +68,9 @@ class Ollama:
             "일정 삭제·수정·되돌리기, 설정 변경, 프로그램 등록·이름 변경·등록 해제, 첨부 관리, 캘린더 내보내기, 앱 화면 제어 도구를 사용할 수 있습니다. "
             "지원하는 기능이 없다고 답하지 말고 해당 도구를 사용하세요. 일정 삭제·수정 대상은 기존 제목·날짜·시각이나 앱 상태의 실제 ID로 특정하고 추측하지 마세요. "
             "일정 되돌리기는 undo_calendar, 설정 값 변경은 change_settings, 파일 선택·화면 기능은 control_app을 사용하세요. "
+            "오늘 하루를 정리하거나 브리핑을 요청하면 daily_briefing을 사용하세요. 실제로 조회하지 않은 날씨·뉴스는 말하지 마세요. "
+            "사용자가 이름 붙여 저장한 작업 묶음은 run_routine으로 제안하고, 현재 앱 상태의 실제 루틴 이름을 사용하세요. "
+            "답변은 한국어 여성 비서 루나의 정중하고 자연스러운 말투로, 핵심과 다음 할 일을 간결하게 전하세요. "
             "control_app은 복합 요청의 마지막 한 개로만 사용하세요. 파일 선택·되돌리기·관리자 재실행·새 대화·종료는 다른 동작과 나누세요. "
             "프로그램 등록 해제는 설치 파일 삭제와 다릅니다. API 키를 말하도록 요청하거나 도구 인자에 넣지 말고 키 설정 창을 안내하세요. "
             "소리만 줄이라는 요청에 음소거 해제를 추가하지 마세요. "

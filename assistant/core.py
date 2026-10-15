@@ -20,10 +20,12 @@ class Calendar:
         with self.connect() as db:
             db.execute("CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, title TEXT NOT NULL, start TEXT NOT NULL, end TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS calendar_changes (id INTEGER PRIMARY KEY AUTOINCREMENT, before_event TEXT, after_event TEXT)")
+            db.execute("CREATE TABLE IF NOT EXISTS reminder_deliveries (event_id TEXT NOT NULL, start TEXT NOT NULL, PRIMARY KEY(event_id, start))")
+            db.execute("CREATE INDEX IF NOT EXISTS events_start ON events(start)")
 
     @contextmanager
-    def connect(self):
-        db = sqlite3.connect(self.path)
+    def connect(self, *, timeout=5):
+        db = sqlite3.connect(self.path, timeout=timeout)
         db.row_factory = sqlite3.Row
         try:
             with db:
@@ -34,6 +36,29 @@ class Calendar:
     def list(self):
         with self.connect() as db:
             return [dict(row) for row in db.execute("SELECT * FROM events ORDER BY start")]
+
+    def due_reminders(self, now, minutes):
+        with self.connect() as db:
+            rows = db.execute("SELECT events.* FROM events WHERE NOT EXISTS "
+                              "(SELECT 1 FROM reminder_deliveries d WHERE d.event_id=events.id AND d.start=events.start) "
+                              "AND start >= ? AND start <= ? ORDER BY start",
+                              (now.isoformat(timespec="minutes"), (now + dt.timedelta(minutes=minutes)).isoformat(timespec="minutes")))
+            return [dict(row) for row in rows if dt.datetime.fromisoformat(row["start"]) >= now][:5]
+
+    def consume_reminders(self, candidates, now, minutes):
+        """Recheck current events and atomically deduplicate across restarts."""
+        delivered = []
+        with self.connect(timeout=0.1) as db:
+            db.execute("BEGIN IMMEDIATE")
+            for candidate in candidates[:5]:
+                row = db.execute("SELECT * FROM events WHERE id=? AND start=?", (candidate["id"], candidate["start"])).fetchone()
+                if row is None or not 0 <= (dt.datetime.fromisoformat(row["start"]) - now).total_seconds() <= minutes * 60:
+                    continue
+                cursor = db.execute("INSERT OR IGNORE INTO reminder_deliveries VALUES (?, ?)", (row["id"], row["start"]))
+                if cursor.rowcount:
+                    delivered.append(dict(row))
+            db.execute("DELETE FROM reminder_deliveries WHERE start < ?", ((now - dt.timedelta(days=7)).isoformat(timespec="minutes"),))
+        return delivered
 
     @staticmethod
     def event_values(title, start, end):

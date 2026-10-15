@@ -697,6 +697,106 @@ class NativeUITests(unittest.TestCase):
         self.assertFalse(hasattr(self.app, "voice_combo"))
         self.assertFalse(hasattr(self.app, "volume_button"))
 
+    def test_briefing_button_and_spoken_request_work_without_ai(self):
+        with patch("urllib.request.urlopen") as network:
+            self.app.briefing_button.invoke()
+            self.wait_for(lambda: not self.app.command_busy)
+            self.assertIn("오늘", self.app.chat.get("1.0", "end"))
+            self.app.recognizer = lambda: "오늘 브리핑해줘"
+            self.app.listen()
+            self.wait_for(lambda: not self.app.listening and not self.app.command_busy)
+            network.assert_not_called()
+
+    def test_named_routine_from_settings_executes_spoken_steps_without_extra_confirmation(self):
+        self.app.open_config("routines")
+        dialog = self.app.config_dialog
+        editor = dialog.routines_page
+        self.assertEqual(dialog.notebook.index(dialog.notebook.select()), 4)
+        editor.name.set("작업 준비")
+        editor.programs.selection_set(["notepad", "calculator"])
+        editor.volume_enabled.set(True)
+        editor.volume.set(25)
+        editor.save()
+        self.assertIn("저장했어요", editor.feedback.get())
+        self.assertEqual(len(self.app.service.routines.catalog()), 1)
+        dialog.close()
+        self.app.recognizer = lambda: "작업 준비해줘"
+        with patch("assistant.programs.Programs.launch", return_value="실행") as launch, patch("assistant.desktop.volume", return_value="볼륨") as volume, patch.object(self.app, "confirm_actions", side_effect=AssertionError("no extra voice confirmation")):
+            self.app.listen()
+            self.wait_for(lambda: not self.app.listening and not self.app.command_busy)
+        self.assertEqual(launch.call_count, 2)
+        volume.assert_called_once_with("set", 25)
+        self.assertEqual(AssistantService(self.temp.name).routines.catalog()[0]["name"], "작업 준비")
+
+    def test_damaged_routine_file_does_not_block_access_to_other_settings(self):
+        self.app.service.routines.path.write_text("invalid JSON")
+        self.app.open_config("routines")
+        dialog = self.app.config_dialog
+        self.assertIn("루틴 목록을 읽지", dialog.routines_page.feedback.get())
+        dialog.voice_speed.set(1.2)
+        self.assertTrue(dialog.save())
+        self.assertEqual(load_settings(self.temp.name)["voice_speed"], 1.2)
+        dialog.close()
+
+    def test_reminder_waits_for_input_and_speech_then_is_delivered_only_once(self):
+        now = dt.datetime.now().replace(second=0, microsecond=0)
+        event = self.app.service.calendar.add("알림 테스트", (now + dt.timedelta(minutes=5)).isoformat(), (now + dt.timedelta(minutes=30)).isoformat())
+        self.app.next_reminder_check = float("inf")
+        self.app.pending_reminders = [event]
+        for flag in ("command_busy", "listening", "speech_active", "audio_checking"):
+            setattr(self.app, flag, True)
+            self.app.poll_reminders()
+            self.assertNotIn("일정 알림:", self.app.chat.get("1.0", "end"))
+            setattr(self.app, flag, False)
+        self.app.poll_reminders()
+        self.assertEqual(self.app.chat.get("1.0", "end").count("일정 알림:"), 1)
+        self.app.pending_reminders = [event]
+        self.app.poll_reminders()
+        self.assertEqual(self.app.chat.get("1.0", "end").count("일정 알림:"), 1)
+
+    def test_pending_reminder_does_not_read_a_deleted_event(self):
+        now = dt.datetime.now().replace(second=0, microsecond=0)
+        event = self.app.service.calendar.add("삭제 테스트", (now + dt.timedelta(minutes=5)).isoformat(), (now + dt.timedelta(minutes=30)).isoformat())
+        self.app.next_reminder_check = float("inf")
+        self.app.pending_reminders = [event]
+        self.app.service.calendar.delete(event["id"])
+        self.app.poll_reminders()
+        self.assertNotIn("일정 알림:", self.app.chat.get("1.0", "end"))
+
+    def test_reminder_preferences_restore_and_can_be_changed_by_voice(self):
+        self.app.open_config()
+        dialog = self.app.config_dialog
+        dialog.reminders_enabled.set(False)
+        dialog.reminder_minutes.set(15)
+        self.assertTrue(dialog.save())
+        dialog.close()
+        self.app.open_config()
+        dialog = self.app.config_dialog
+        self.assertFalse(dialog.reminders_enabled.get())
+        self.assertEqual(dialog.reminder_minutes.get(), 15)
+        self.app.recognizer = lambda: "일정 알림 5분 전에 설정해줘"
+        self.app.listen()
+        self.wait_for(lambda: not self.app.listening and not self.app.command_busy)
+        self.assertTrue(dialog.reminders_enabled.get())
+        self.assertEqual(dialog.reminder_minutes.get(), 5)
+        self.assertEqual(load_settings(self.temp.name)["reminder_minutes"], 5)
+        dialog.close()
+
+    def test_live_assistant_state_reflects_actual_listening_processing_and_speaking(self):
+        for flag, expected in (("listening", "듣는 중"), ("command_busy", "처리 중"), ("speech_active", "말하는 중"), ("audio_checking", "음성 점검")):
+            setattr(self.app, flag, True)
+            self.app.update_assistant_state()
+            self.assertEqual(self.app.assistant_state.get(), expected)
+            setattr(self.app, flag, False)
+        self.app.update_assistant_state()
+        self.assertEqual(self.app.assistant_state.get(), "대기")
+
+    def test_failed_wake_listener_is_not_reported_as_ready(self):
+        listener = self.attach_wake_listener()
+        listener.failed = True
+        self.app.update_assistant_state()
+        self.assertEqual(self.app.assistant_state.get(), "호출 오류")
+
     def test_ai_proposal_cancelled_in_native_ui_does_not_launch(self):
         save_settings(self.temp.name, "", False, ai_mode="local", ollama_model="qwen3:4b")
         calls = [{"function": {"name": "launch_program", "arguments": {"app_id": "notepad"}}}]
@@ -832,7 +932,7 @@ class NativeUITests(unittest.TestCase):
         self.app._voices_loaded([{"name": "local:F4", "culture": "ko-KR", "gender": "Female"}])
         self.app.open_config()
         dialog = self.app.config_dialog
-        self.assertEqual([dialog.notebook.tab(tab, "text") for tab in dialog.notebook.tabs()], ["AI · 대화", "프로그램", "소리 · 음성", "Windows 제어"])
+        self.assertEqual([dialog.notebook.tab(tab, "text") for tab in dialog.notebook.tabs()], ["AI · 대화", "프로그램", "소리 · 음성", "Windows 제어", "루틴"])
         dialog.mode.set("Ollama 로컬 · API 키 불필요")
         dialog.model.set("qwen3:4b")
         dialog.vision_model.set("gemma3:4b")

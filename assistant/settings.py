@@ -42,10 +42,10 @@ def load_settings(folder):
             result["search_provider"] = data["search_provider"]
         if data.get("search_kind") in ("web", "news", "video"):
             result["search_kind"] = data["search_kind"]
-        for key in ("remember_chat", "apply_volume_on_start", "windows_control", "wake_enabled", "wake_during_speech"):
+        for key in ("remember_chat", "apply_volume_on_start", "windows_control", "wake_enabled", "wake_during_speech", "reminders_enabled"):
             if isinstance(data.get(key), bool):
                 result[key] = data[key]
-        for key, low, high in (("history_turns", 1, 20), ("volume", 0, 100)):
+        for key, low, high in (("history_turns", 1, 20), ("volume", 0, 100), ("reminder_minutes", 1, 60)):
             if type(data.get(key)) is int and low <= data[key] <= high:
                 result[key] = data[key]
         return result
@@ -56,7 +56,8 @@ def load_settings(folder):
 def save_settings(folder, voice, speak, *, ai_mode=None, ollama_model=None, remember_chat=None,
                   history_turns=None, volume=None, apply_volume_on_start=None, windows_control=None,
                   vision_model=None, search_provider=None, search_kind=None, voice_speed=None,
-                  wake_enabled=None, wake_during_speech=None, openai_model=None, openai_vision_model=None):
+                  wake_enabled=None, wake_during_speech=None, openai_model=None, openai_vision_model=None,
+                  reminders_enabled=None, reminder_minutes=None):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     temporary = folder / f"settings-{uuid.uuid4().hex}.tmp"
@@ -82,12 +83,12 @@ def save_settings(folder, voice, speak, *, ai_mode=None, ollama_model=None, reme
                     raise ValueError("Invalid search preference")
                 data[key] = value
         for key, value in (("remember_chat", remember_chat), ("apply_volume_on_start", apply_volume_on_start), ("windows_control", windows_control),
-                           ("wake_enabled", wake_enabled), ("wake_during_speech", wake_during_speech)):
+                           ("wake_enabled", wake_enabled), ("wake_during_speech", wake_during_speech), ("reminders_enabled", reminders_enabled)):
             if value is not None:
                 if type(value) is not bool:
                     raise ValueError("Invalid boolean preference")
                 data[key] = value
-        for key, value, low, high in (("history_turns", history_turns, 1, 20), ("volume", volume, 0, 100)):
+        for key, value, low, high in (("history_turns", history_turns, 1, 20), ("volume", volume, 0, 100), ("reminder_minutes", reminder_minutes, 1, 60)):
             if value is not None:
                 if type(value) is not int or not low <= value <= high:
                     raise ValueError("Invalid numeric preference")

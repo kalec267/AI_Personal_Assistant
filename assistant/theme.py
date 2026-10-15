@@ -42,4 +42,6 @@ def apply_theme(root):
                     borderwidth=0, font=("Malgun Gothic", 10))
     style.configure("Treeview.Heading", background=SURFACE, foreground=MUTED, font=("Malgun Gothic", 9, "bold"), padding=10, relief="flat")
     style.configure("Calendar.Treeview", rowheight=32)
+    style.configure("Routine.Treeview", rowheight=26)
+    style.configure("Routine.Treeview.Heading", padding=(8, 6))
     style.map("Treeview", background=[("selected", TINT)], foreground=[("selected", BLUE)])
