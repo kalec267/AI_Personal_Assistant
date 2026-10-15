@@ -16,6 +16,7 @@ import zipfile
 
 from .core import UserError
 from .settings import default_data_dir
+from .voice import recognize_audio
 
 MODEL_NAME = "vosk-model-small-ko-0.22"
 MODEL_URL = f"https://alphacephei.com/vosk/models/{MODEL_NAME}.zip"
@@ -125,15 +126,7 @@ def transcribe_command(payload):
         sr = importlib.import_module("speech_recognition")
     except ImportError:
         raise UserError("setup.bat으로 음성 인식 패키지를 설치하세요.") from None
-    try:
-        recognizer = sr.Recognizer()
-        recognizer.operation_timeout = 12
-        text = recognizer.recognize_google(sr.AudioData(data, sample_rate, 2), language="ko-KR",
-                                           endpoint="https://www.google.com/speech-api/v2/recognize")
-    except (OSError, sr.RequestError):
-        raise UserError("명령 음성 인식에 연결하지 못했어요. 네트워크를 확인하세요.") from None
-    except sr.UnknownValueError:
-        raise UserError("명령을 이해하지 못했어요. 다시 ‘루나’라고 불러 주세요.") from None
+    text = recognize_audio(sr.AudioData(data, sample_rate, 2), sr)
     tail = wake_command(text)
     if inline and tail is None:
         raise UserError("호출어와 명령을 확인하지 못했어요. ‘루나’라고 부른 뒤 명령을 말씀해 주세요.")
@@ -196,7 +189,9 @@ class WakeListener:
                 with self.microphone_lock:
                     if not self.valid(epoch):
                         continue
-                    with sr.Microphone(sample_rate=16000) as source:
+                    # Use the device's native rate; some Windows devices reject
+                    # a forced 16 kHz stream. Vosk resamples from SAMPLE_RATE.
+                    with sr.Microphone() as source:
                         decoder = vosk.KaldiRecognizer(model, source.SAMPLE_RATE)
                         capture = WakeCapture(source.SAMPLE_RATE)
                         if self.valid(epoch):

@@ -95,7 +95,7 @@ class LocalVoice:
         return all((self.model_path / filename).is_file() for filename in MODEL_FILES)
 
     def list(self):
-        return [{"name": f"local:F{i}", "culture": "ko-KR", "gender": "Female"} for i in range(1, 6)]
+        return [{"name": f"local:F{i}", "culture": "ko-KR", "gender": "Female", "available": self.ready()} for i in range(1, 6)]
 
     def _engine(self):
         if self._tts is not None:
@@ -104,18 +104,21 @@ class LocalVoice:
             raise UserError("로컬 음성 모델이 없어요. setup_voice.bat을 한 번 실행하세요.")
         try:
             sherpa = importlib.import_module("sherpa_onnx")
-        except ImportError:
+        except (ImportError, OSError):
             raise UserError("로컬 음성 패키지가 없어요. setup_voice.bat을 실행하세요.") from None
         folder = self.model_path
         options = {name: str(folder / filename) for name, filename in [
             ("duration_predictor", "duration_predictor.int8.onnx"), ("text_encoder", "text_encoder.int8.onnx"),
             ("vector_estimator", "vector_estimator.int8.onnx"), ("vocoder", "vocoder.int8.onnx"),
             ("tts_json", "tts.json"), ("unicode_indexer", "unicode_indexer.bin"), ("voice_style", "voice.bin")]}
-        config = sherpa.OfflineTtsConfig(model=sherpa.OfflineTtsModelConfig(
-            supertonic=sherpa.OfflineTtsSupertonicModelConfig(**options), num_threads=2, provider="cpu", debug=False))
-        if not config.validate():
-            raise UserError("로컬 음성 모델 설정을 확인할 수 없습니다.")
-        self._tts = sherpa.OfflineTts(config)
+        try:
+            config = sherpa.OfflineTtsConfig(model=sherpa.OfflineTtsModelConfig(
+                supertonic=sherpa.OfflineTtsSupertonicModelConfig(**options), num_threads=2, provider="cpu", debug=False))
+            if not config.validate():
+                raise UserError("로컬 음성 모델 설정을 확인할 수 없습니다.")
+            self._tts = sherpa.OfflineTts(config)
+        except (AttributeError, RuntimeError, ValueError):
+            raise UserError("로컬 음성 모델을 불러오지 못했어요. setup_voice.bat으로 패키지와 모델 설치를 확인하세요.") from None
         return self._tts
 
     def synthesize(self, text, name="local:F1", filename=None, *, speed=1.0):
@@ -132,7 +135,10 @@ class LocalVoice:
         config.num_steps = 5
         config.speed = speed
         config.extra["lang"] = "ko"
-        audio = engine.generate(str(text)[:1000], config)
+        try:
+            audio = engine.generate(str(text)[:1000], config)
+        except Exception:
+            raise UserError("로컬 음성 합성에 실패했어요. setup_voice.bat으로 음성 패키지를 확인하고 음성 모델 설치 상태를 점검하세요.") from None
         if not len(audio.samples):
             raise UserError("로컬 음성이 생성되지 않았어요.")
         if filename:
@@ -192,7 +198,10 @@ class LocalVoice:
                 import winsound
                 # Start and stop share a short lock. Synchronous playback here
                 # would prevent a new command from stopping the current sound.
-                winsound.PlaySound(str(filename), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+                try:
+                    winsound.PlaySound(str(filename), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+                except RuntimeError:
+                    raise UserError("음성을 만들었지만 재생하지 못했어요. Windows 기본 출력 장치·앱별 볼륨·음소거를 확인하세요.") from None
                 self._playing = True
             try:
                 # Keep the temporary WAV alive until playback ends or is stopped.

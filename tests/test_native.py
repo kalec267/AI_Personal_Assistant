@@ -454,6 +454,68 @@ class NativeUITests(unittest.TestCase):
             self.app.say("새 답변")
             queued[1][2](UserError("현재 음성 오류"))
             self.assertEqual(self.app.voice_note.get(), "현재 음성 오류")
+            self.assertIn("음성 출력 오류", self.app.status_var.get())
+
+    def test_audio_check_pauses_wake_and_commands_then_shows_results(self):
+        listener = self.attach_wake_listener()
+        self.app.open_config()
+        dialog = self.app.config_dialog
+        started, release = threading.Event(), threading.Event()
+        lock = self.app.microphone_lock
+
+        def check(*args):
+            self.assertTrue(lock.locked())
+            started.set()
+            if not release.wait(3):
+                raise AssertionError("Diagnostic did not finish")
+            return "기본 마이크: 정상\n로컬 음성 모델: 미설치"
+
+        with patch("assistant.app.diagnose_audio", side_effect=check), patch.object(self.app.service, "execute") as execute:
+            dialog.check_audio()
+            try:
+                self.assertTrue(started.wait(3))
+                self.assertFalse(listener.available.is_set())
+                self.assertTrue(self.app.audio_checking)
+                self.app.submit("메모장 실행")
+                self.app.listen()
+                execute.assert_not_called()
+                self.assertFalse(self.app.listening)
+            finally:
+                release.set()
+            self.wait_for(lambda: not self.app.audio_checking)
+        self.assertIn("로컬 음성 모델: 미설치", dialog.audio_report.get("1.0", "end"))
+        self.assertEqual(str(dialog.audio_check_button["state"]), "normal")
+        self.assertEqual(str(self.app.mic_button["state"]), "normal")
+        self.assertTrue(listener.available.is_set())
+        dialog.close()
+
+    def test_audio_check_failure_restores_microphone_and_retry(self):
+        self.app.open_config()
+        dialog = self.app.config_dialog
+        with patch("assistant.app.diagnose_audio", side_effect=UserError("점검 실패")):
+            dialog.check_audio()
+            self.wait_for(lambda: not self.app.audio_checking)
+        self.assertIn("점검 실패", dialog.audio_report.get("1.0", "end"))
+        self.assertEqual(str(self.app.mic_button["state"]), "normal")
+        self.assertEqual(str(dialog.audio_check_button["state"]), "normal")
+        dialog.close()
+
+    def test_failed_wake_listener_can_be_restarted_after_device_reconnect(self):
+        failed = self.attach_wake_listener()
+        failed.failed = True
+        replacement = WakeListener(self.temp.name, self.app.microphone_lock)
+        with patch("assistant.app.os", type("WindowsOS", (), {"name": "nt"})), patch("assistant.app.model_ready", return_value=True), patch("assistant.app.WakeListener", return_value=replacement), patch.object(replacement, "start") as start:
+            self.app.configure_wake()
+        self.assertTrue(failed.stopped.is_set())
+        self.assertIs(self.app.wake, replacement)
+        start.assert_called_once()
+
+    def test_no_selected_voice_shows_installation_help_for_normal_answers(self):
+        self.app.speak_var.set(True)
+        self.app.voice_var.set("")
+        self.app.say("안녕하세요")
+        self.assertIn("로컬 음성을 설치", self.app.voice_note.get())
+        self.voice.prepare.assert_not_called()
 
     def test_command_draft_save_restart_delete_export(self):
         self.app.submit("내일 오후 3시 팀 회의 일정 추가")

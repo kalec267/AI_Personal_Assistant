@@ -141,6 +141,16 @@ class ConfigDialog(tk.Toplevel):
 
     def _build_sound(self, frame):
         self.heading(frame, "목소리와 사운드")
+        self.audio_check_button = ttk.Button(frame, text="음성 입력·출력 점검", command=self.check_audio)
+        self.audio_check_button.pack(anchor="w", pady=(0, 8))
+        self.audio_description = ttk.Label(frame, text="점검 중 1초 정도 말해 주세요. 기본 마이크·입력 레벨·음성 모델과 읽기 설정을 확인합니다.\n이 점검은 음성을 외부로 전송하거나 인식한 명령을 실행하지 않습니다.", wraplength=580)
+        self.audio_description.pack(anchor="w", pady=(0, 8))
+        self.audio_report_frame = ttk.Frame(frame)
+        self.audio_report = tk.Text(self.audio_report_frame, height=9, wrap="word", state="disabled", font=("Malgun Gothic", 9))
+        report_scroll = ttk.Scrollbar(self.audio_report_frame, command=self.audio_report.yview)
+        self.audio_report.configure(yscrollcommand=report_scroll.set)
+        report_scroll.pack(side="right", fill="y")
+        self.audio_report.pack(side="left", fill="x", expand=True)
         ttk.Checkbutton(frame, text="‘루나’라고 부르면 명령 듣기 · 앱 실행 중 자동 감지", variable=self.wake_enabled).pack(anchor="w", pady=5)
         ttk.Checkbutton(frame, text="답변 재생 중에도 호출 감지 · 이어폰 사용 권장", variable=self.wake_during_speech).pack(anchor="w", pady=5)
         ttk.Label(frame, text="호출 대기는 이 PC에서 오프라인으로 인식합니다.\n호출 후 명령 음성은 기존 Google 인식에 전송합니다.\n스피커의 루나 목소리를 호출로 오인하지 않도록 기본값은 답변 중 감지 일시 정지입니다.", wraplength=580).pack(anchor="w", pady=8)
@@ -235,7 +245,7 @@ class ConfigDialog(tk.Toplevel):
         ttk.Label(frame, textvariable=self.windows_feedback, wraplength=580).pack(anchor="w", pady=10)
 
     def restart_admin(self):
-        if self.app.command_busy or self.app.listening:
+        if self.app.command_busy or self.app.listening or self.app.audio_checking:
             self.windows_feedback.set("진행 중인 요청이나 음성 인식이 끝난 뒤 다시 실행하세요.")
             return
         if self.app.installing_voice:
@@ -399,6 +409,25 @@ class ConfigDialog(tk.Toplevel):
 
     def test_voice(self):
         self.app.say("안녕하세요. 당신의 개인 비서 루나예요.", force=True, name=self.voice_var.get(), speed=round(self.voice_speed.get(), 2))
+
+    def check_audio(self):
+        self.audio_report_frame.pack(after=self.audio_description, fill="x", pady=(0, 12))
+        self.audio_check_button.configure(state="disabled")
+        self.audio_checked("점검 중입니다. 잠시 말씀해 주세요…", finished=False)
+        self.app.check_audio(self.voice_var.get(), self.speak.get(), self.audio_checked, self.audio_check_failed)
+
+    def audio_checked(self, result, finished=True):
+        if not self.winfo_exists():
+            return
+        self.audio_report.configure(state="normal")
+        self.audio_report.delete("1.0", "end")
+        self.audio_report.insert("1.0", result)
+        self.audio_report.configure(state="disabled")
+        if finished:
+            self.audio_check_button.configure(state="normal")
+
+    def audio_check_failed(self, error):
+        self.audio_checked(str(error))
 
     def speed_changed(self, value):
         self.speed_label.set(f"{float(value):.2f}배")

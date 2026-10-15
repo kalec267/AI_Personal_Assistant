@@ -101,7 +101,7 @@ class WakeTests(unittest.TestCase):
     def test_listener_is_local_and_releases_microphone_after_one_command(self):
         sr, vosk = MagicMock(), MagicMock()
         source = sr.Microphone.return_value.__enter__.return_value
-        source.SAMPLE_RATE = 16000
+        source.SAMPLE_RATE = 48000
         source.CHUNK = 1024
         source.stream.read.side_effect = [b"start", b"end"]
         decoder = vosk.KaldiRecognizer.return_value
@@ -116,7 +116,9 @@ class WakeTests(unittest.TestCase):
             try:
                 events = [listener.events.get(timeout=3) for _ in range(3)]
                 self.assertEqual([event[1] for event in events], ["ready", "wake", "audio"])
-                self.assertEqual(events[-1][2], (b"startend", 16000, True))
+                self.assertEqual(events[-1][2], (b"startend", 48000, True))
+                sr.Microphone.assert_called_once_with()
+                vosk.KaldiRecognizer.assert_called_once_with(vosk.Model.return_value, 48000)
                 network.assert_not_called()
                 sr.Recognizer.assert_not_called()
             finally:

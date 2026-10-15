@@ -17,7 +17,7 @@ def preferred_voice(voices, saved=""):
         return saved
     # Never silently select a male or non-Korean voice as the requested default.
     for voice in voices:
-        if voice.get("culture", "").lower().startswith("ko") and voice.get("gender") == "Female":
+        if voice.get("culture", "").lower().startswith("ko") and voice.get("gender") == "Female" and voice.get("available", True):
             return voice["name"]
     return ""
 
@@ -137,25 +137,42 @@ class VoiceRouter:
             self.windows.close()
 
 
-def recognize_once():
+def recognize_audio(audio, sr):
+    """Shared online STT for the manual button and locally detected wake calls."""
+    recognizer = sr.Recognizer()
+    recognizer.operation_timeout = 12
+    try:
+        return recognizer.recognize_google(audio, language="ko-KR", endpoint="https://www.google.com/speech-api/v2/recognize")
+    except sr.UnknownValueError:
+        raise UserError("말씀을 이해하지 못했어요. 마이크 입력 볼륨·주변 소음을 확인한 뒤 다시 말씀해 주세요.") from None
+    except sr.RequestError:
+        raise UserError("Google 음성 인식에 연결하지 못했어요. 인터넷·방화벽·VPN을 확인하세요. AI API 키와는 별도 기능입니다.") from None
+    except (OSError, AttributeError):
+        raise UserError("음성 변환에 실패했어요. setup.bat을 다시 실행하세요. 실행 파일을 쓰면 FLAC 변환 도구가 포함되도록 다시 빌드하세요.") from None
+
+
+def recognize_once(*, progress=None):
     try:
         sr = importlib.import_module("speech_recognition")
     except ImportError:
         raise UserError("마이크 기능 설치가 필요해요. setup.bat을 실행한 뒤 앱을 다시 시작하세요.") from None
     recognizer = sr.Recognizer()
     recognizer.operation_timeout = 12
+    recognizer.pause_threshold = 1.0
     try:
+        if progress:
+            progress("마이크 연결·주변 소음 확인 중… ‘지금 말씀하세요’가 표시되면 말해 주세요.")
         with sr.Microphone() as source:
+            if source.stream is None:
+                raise UserError("마이크 입력을 열지 못했어요. Windows 기본 입력 장치·마이크 권한·다른 앱의 독점 사용을 확인하세요.")
             recognizer.adjust_for_ambient_noise(source, duration=0.5)
+            if progress:
+                progress("지금 말씀하세요. 말이 끝나면 자동으로 명령을 수행합니다.")
             audio = recognizer.listen(source, timeout=5, phrase_time_limit=10)
-        # Manual capture remains bounded; the optional local wake listener has
-        # separate microphone ownership and never sends ambient audio here.
-        return recognizer.recognize_google(audio, language="ko-KR", endpoint="https://www.google.com/speech-api/v2/recognize")
     except sr.WaitTimeoutError:
         raise UserError("음성이 감지되지 않았어요. 마이크 버튼을 누르고 다시 말씀해 주세요.") from None
-    except sr.UnknownValueError:
-        raise UserError("말씀을 이해하지 못했어요. 다시 말하거나 텍스트를 입력해 주세요.") from None
-    except sr.RequestError:
-        raise UserError("온라인 음성 인식에 연결하지 못했어요. 네트워크를 확인하거나 텍스트를 입력하세요.") from None
-    except (AttributeError, ImportError, OSError):
+    except (AttributeError, AssertionError, ImportError, OSError):
         raise UserError("마이크를 사용할 수 없어요. setup.bat 설치, 기본 입력 장치와 Windows 마이크 권한을 확인해 주세요.") from None
+    if progress:
+        progress("말씀하신 명령을 글자로 변환하고 있어요…")
+    return recognize_audio(audio, sr)

@@ -19,6 +19,7 @@ from .config_dialog import ConfigDialog
 from .local_voice import install_model, MODEL_NAME, MODEL_FILES
 from .settings import default_data_dir, load_settings, save_settings
 from .voice import VoiceRouter, preferred_voice, recognize_once
+from .audio_diagnostics import diagnose_audio
 from .wake_word import WakeListener, install_wake_model, model_ready, recognize_locked, transcribe_command
 from .theme import BG, PAPER, INK, MUTED, BLUE, LINE, SURFACE, TINT, apply_theme
 
@@ -89,6 +90,8 @@ class LunaApp:
         self.command_busy = False
         self.voice_command = False
         self.listening = False
+        self.audio_checking = False
+        self.listen_progress = queue.Queue()
         self.speech_generation = 0
         self.speech_active = False
         self.microphone_lock = threading.Lock()
@@ -181,6 +184,7 @@ class LunaApp:
         orb.bind("<Configure>", self._draw_orb)
         tk.Label(left, textvariable=self.status_var, bg=PAPER, fg=MUTED, font=("Malgun Gothic", 9), wraplength=460).pack(pady=(0, 12))
         tk.Label(left, textvariable=self.wake_note, bg=PAPER, fg=BLUE, font=("Malgun Gothic", 8), wraplength=460).pack(pady=(0, 6))
+        tk.Label(left, textvariable=self.voice_note, bg=PAPER, fg=MUTED, font=("Malgun Gothic", 8), wraplength=460).pack(pady=(0, 6))
         transcript = tk.Frame(left, bg=PAPER, height=1)
         transcript.pack_propagate(False)
         transcript.pack(fill="both", expand=True)
@@ -365,6 +369,13 @@ class LunaApp:
             pass
         try:
             while True:
+                message = self.listen_progress.get_nowait()
+                if self.listening and not self.wake_listening and not self.wake_pending:
+                    self.status_var.set(message)
+        except queue.Empty:
+            pass
+        try:
+            while True:
                 identifier, succeeded, value = self.jobs.get_nowait()
                 callbacks = self.callbacks.pop(identifier, None)
                 if callbacks is None:
@@ -388,7 +399,7 @@ class LunaApp:
         self.append_message("오류", str(error))
 
     def submit(self, text=None, *, from_voice=False):
-        if self.command_busy or self.listening:
+        if self.command_busy or self.listening or self.audio_checking:
             return
         text = (self.command_var.get() if text is None else text).strip()
         if not text:
@@ -557,6 +568,10 @@ class LunaApp:
                 self.config_dialog.test_voice()
             else:
                 self.say("안녕하세요. 당신의 개인 비서 루나예요.", force=True)
+        elif kind == "check_audio":
+            self.open_config()
+            self.config_dialog.notebook.select(2)
+            self.config_dialog.check_audio()
         elif kind == "install_voice":
             self.install_voice()
         elif kind == "install_wake":
@@ -724,17 +739,24 @@ class LunaApp:
                 self.show_error(UserError("파일을 저장할 수 없어요. 폴더의 쓰기 권한을 확인해 주세요."))
 
     def listen(self):
-        if self.listening or self.command_busy:
+        if self.listening or self.command_busy or self.audio_checking:
             return
         self.listening = True
         self.sync_wake_availability()
         self.stop_speech()
         self.mic_button.configure(state="disabled", text="듣는 중…")
         self.send_button.configure(state="disabled")
-        self.status_var.set("주변 소음 확인 후 듣습니다. 잠시 뒤 말씀해 주세요. 최대 10초 동안 인식해요.")
-        self.run_task(functools.partial(recognize_locked, self.recognizer, self.microphone_lock), self._heard, self._listen_failed)
+        self.status_var.set("마이크를 준비하고 있어요… ‘지금 말씀하세요’가 표시되면 말해 주세요.")
+        while not self.listen_progress.empty():
+            self.listen_progress.get_nowait()
+        recognizer = (functools.partial(recognize_once, progress=self.listen_progress.put)
+                      if self.recognizer is recognize_once else self.recognizer)
+        self.run_task(functools.partial(recognize_locked, recognizer, self.microphone_lock), self._heard, self._listen_failed)
 
     def configure_wake(self):
+        if self.wake is not None and self.wake.failed:
+            # Settings save / device reconnection should allow a single retry.
+            self.stop_wake()
         if not self.settings.get("wake_enabled", True):
             self.stop_wake()
             self.wake_note.set("‘루나’ 호출 감지 꺼짐 · 마이크 버튼 사용 가능")
@@ -763,7 +785,7 @@ class LunaApp:
     def sync_wake_availability(self):
         if self.wake is None or self.wake.failed:
             return
-        available = (not self.closed and not self.command_busy and (not self.listening or self.wake_listening)
+        available = (not self.closed and not self.command_busy and not self.audio_checking and (not self.listening or self.wake_listening)
                      and (not self.speech_active or self.settings.get("wake_during_speech", False))
                      and self.root.grab_current() is None)
         if not available and self.wake_listening:
@@ -791,6 +813,8 @@ class LunaApp:
                 if self.wake_listening:
                     self.wake_listening = False
                     self._listen_failed(UserError(value))
+                else:
+                    self.status_var.set(value)
             elif kind == "ready":
                 self.wake_note.set("‘루나’라고 불러 주세요 · 마이크에서 호출어 감지 중")
             elif kind == "wake":
@@ -867,7 +891,7 @@ class LunaApp:
             self.voice_var.set(name)
             self.voice_note.set(self._voice_description(name))
         else:
-            self.voice_note.set("한국어 여성 음성이 없어요. Windows 한국어 음성 설치 후 앱을 다시 시작하거나 목록에서 직접 선택하세요.")
+            self.voice_note.set("사용 가능한 한국어 여성 음성이 없어요. 설정 → 소리 · 음성에서 ‘로컬 음성 설치’를 누르거나 설치된 목소리를 선택하세요.")
         self.refresh_voice_settings()
 
     def refresh_voice_settings(self):
@@ -927,30 +951,55 @@ class LunaApp:
         self.speech_active = False
         self.voice.stop()
 
+    def check_audio(self, voice_name, speak_enabled, success, failure):
+        if self.audio_checking or self.listening or self.command_busy:
+            failure(UserError("진행 중인 명령·음성 인식·점검이 끝난 뒤 다시 점검하세요."))
+            return
+        self.audio_checking = True
+        self.sync_wake_availability()
+        self.stop_speech()
+        self.mic_button.configure(state="disabled")
+        self.send_button.configure(state="disabled")
+        self.status_var.set("음성 장치 점검 중… 잠시 말씀해 주세요. 오디오는 외부로 전송하지 않습니다.")
+
+        def done(value, failed=False):
+            self.audio_checking = False
+            self.mic_button.configure(state="normal")
+            self.send_button.configure(state="normal")
+            self.status_var.set("음성 점검을 마쳤어요. 설정 창에서 결과를 확인하세요.")
+            self.sync_wake_availability()
+            (failure if failed else success)(value)
+
+        check = functools.partial(diagnose_audio, self.data_dir, voice_name, speak_enabled)
+        self.run_task(functools.partial(recognize_locked, check, self.microphone_lock), done,
+                      functools.partial(done, failed=True))
+
     def say(self, text, force=False, name=None, speed=None):
         if not force and not self.speak_var.get():
             return
         name = self.selected_voice() if name is None else name
         if not name:
-            if force:
-                self.voice_note.set("먼저 사용할 음성을 선택해 주세요. 한국어 여성 음성은 Windows 설정에서 설치할 수 있어요.")
+            self.voice_note.set("사용할 음성이 없어요. 설정 → 소리 · 음성에서 로컬 음성을 설치하거나 목소리를 선택하고 저장하세요.")
             return
-        if self.listening:
+        if self.listening or self.audio_checking:
             return
         speed = self.voice_speed if speed is None else speed
         self.speech_generation += 1
         generation = self.speech_generation
         self.speech_active = True
+        self.voice_note.set("음성을 준비하고 있어요… 로컬 음성의 첫 실행은 모델을 불러오는 시간이 필요합니다.")
         self.sync_wake_availability()
 
         def finished(_value):
             if generation == self.speech_generation:
                 self.speech_active = False
+                self.voice_note.set("음성 재생 처리를 마쳤어요. 소리가 안 들리면 설정 → 소리 · 음성에서 음성 점검을 실행하세요.")
 
         def failed(error):
             if not self.closed and generation == self.speech_generation:
                 self.speech_active = False
                 self.voice_note.set(str(error))
+                self.status_var.set("음성 출력 오류: " + str(error).splitlines()[0][:140])
 
         # Reserve on the UI thread. A worker that starts late must keep its old
         # ticket rather than cancelling or reviving speech for a newer command.
