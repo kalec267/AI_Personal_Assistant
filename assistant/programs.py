@@ -1,8 +1,10 @@
 """Only user-registered executables can be launched by the model."""
 import json
+import functools
 import re
 import subprocess
 import unicodedata
+import threading
 import uuid
 from pathlib import Path
 
@@ -16,9 +18,18 @@ def name_key(name):
     return "".join(unicodedata.normalize("NFKC", name).casefold().split())
 
 
+def mutation(method):
+    @functools.wraps(method)
+    def locked(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return locked
+
+
 class Programs:
     def __init__(self, folder):
         self.path = Path(folder) / "programs.json"
+        self._lock = threading.RLock()
 
     def custom(self):
         try:
@@ -59,6 +70,7 @@ class Programs:
             return None
         return target
 
+    @mutation
     def register(self, name, filename):
         path = Path(filename).resolve()
         name = name.strip() if isinstance(name, str) else ""
@@ -85,11 +97,27 @@ class Programs:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def remove(self, identifier):
+    @mutation
+    def remove(self, identifier, *, expected=None):
         items = self.custom()
         if identifier not in items:
             raise UserError("직접 등록한 프로그램만 삭제할 수 있어요.")
+        if expected is not None and {"id": identifier, **items[identifier]} != expected:
+            raise UserError("프로그램 등록 정보가 바뀌었어요. 다시 요청하세요.")
         del items[identifier]
+        self._save(items)
+
+    @mutation
+    def rename(self, identifier, name, *, expected=None):
+        name = name.strip() if isinstance(name, str) else ""
+        if not name or len(name) > 60 or any(ord(char) < 32 for char in name):
+            raise UserError("프로그램 이름은 1~60자로 입력하세요.")
+        items = self.custom()
+        if identifier not in items or expected is not None and {"id": identifier, **items[identifier]} != expected:
+            raise UserError("프로그램 등록 정보가 바뀌었어요. 다시 요청하세요.")
+        if any(key != identifier and name_key(item["name"]) == name_key(name) for key, item in items.items()):
+            raise UserError("이미 등록된 이름입니다.")
+        items[identifier]["name"] = name
         self._save(items)
 
     def launch(self, identifier):

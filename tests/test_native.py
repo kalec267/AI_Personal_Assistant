@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import ANY, MagicMock, patch
 
 from assistant.app import LunaApp
+from assistant.attachments import Attachment
 from tests.program_fixtures import register_fixture_programs
 from assistant.core import UserError
 from assistant.programs import Programs
@@ -309,6 +310,119 @@ class NativeUITests(unittest.TestCase):
                 self.app.poll_wake()
                 self.wait_for(lambda: popen.called and not self.app.listening and not self.app.command_busy)
             popen.assert_called_once_with([str(exe)], shell=False, cwd=str(exe.parent))
+
+    def test_voice_deletes_and_restores_schedule_and_updates_calendar_without_confirmation(self):
+        day = (dt.date.today() + dt.timedelta(days=1)).isoformat()
+        event = self.app.service.calendar.add("팀 회의", day + "T15:00", day + "T16:00")
+        self.app.recognizer = lambda: "내일 팀 회의 일정 삭제해줘"
+        with patch.object(self.app, "confirm_actions", side_effect=AssertionError("no second voice confirmation")):
+            self.app.listen()
+            self.wait_for(lambda: not self.app.listening and not self.app.command_busy)
+            self.assertEqual(self.app.service.calendar.list(), [])
+            self.assertEqual(self.app.tree.get_children(), ())
+            self.app.recognizer = lambda: "최근 일정 변경 되돌려줘"
+            self.app.listen()
+            self.wait_for(lambda: not self.app.listening and not self.app.command_busy)
+        self.assertEqual(self.app.service.calendar.list(), [event])
+        self.assertEqual(self.app.day_var.get(), day)
+        self.assertEqual(len(self.app.tree.get_children()), 1)
+
+    def test_ambiguous_voice_delete_speaks_a_clarification_and_keeps_both_events(self):
+        day = (dt.date.today() + dt.timedelta(days=1)).isoformat()
+        for hour in (15, 18):
+            self.app.service.calendar.add("팀 회의", f"{day}T{hour}:00", f"{day}T{hour+1}:00")
+        self.app.speak_var.set(True)
+        self.app.voice_var.set("local:F1")
+        self.app.recognizer = lambda: "내일 팀 회의 일정 삭제해줘"
+        self.app.listen()
+        self.wait_for(lambda: self.voice.speak.called and not self.app.command_busy)
+        self.assertIn("2개라", self.voice.speak.call_args.args[0])
+        self.assertEqual(len(self.app.service.calendar.list()), 2)
+
+    def test_voice_settings_update_open_dialog_without_erasing_other_unsaved_fields(self):
+        self.app.open_config("sound")
+        dialog = self.app.config_dialog
+        dialog.remember.set(True)
+        self.app.recognizer = lambda: "음성 속도 1.4배로 설정해줘"
+        self.app.listen()
+        self.wait_for(lambda: not self.app.listening and not self.app.command_busy)
+        self.assertEqual(self.app.voice_speed, 1.4)
+        self.assertEqual(dialog.voice_speed.get(), 1.4)
+        self.assertTrue(dialog.remember.get())
+        self.assertEqual(load_settings(self.temp.name)["voice_speed"], 1.4)
+        self.app.recognizer = lambda: "설정 저장해줘"
+        self.app.listen()
+        self.wait_for(lambda: load_settings(self.temp.name).get("remember_chat") is True)
+        dialog.close()
+
+    def test_voice_program_registration_rename_and_removal_refresh_the_open_list(self):
+        exe = Path(self.temp.name) / "chrome.exe"
+        exe.write_bytes(b"never execute")
+        self.app.recognizer = lambda: "크롬 등록해줘"
+        with patch("assistant.config_dialog.filedialog.askopenfilename", return_value=str(exe)):
+            self.app.listen()
+            self.wait_for(lambda: any(item["name"] == "크롬" for item in self.app.service.programs.catalog()))
+        dialog = self.app.config_dialog
+        self.app.recognizer = lambda: "크롬 이름을 브라우저로 바꿔줘"
+        self.app.listen()
+        self.wait_for(lambda: not self.app.listening and not self.app.command_busy)
+        labels = [dialog.program_list.item(key, "values")[0] for key in dialog.program_list.get_children()]
+        self.assertIn("브라우저", labels)
+        self.app.recognizer = lambda: "브라우저 등록 해제해줘"
+        self.app.listen()
+        self.wait_for(lambda: not self.app.listening and not self.app.command_busy)
+        self.assertTrue(exe.is_file())
+        self.assertFalse(any(item["name"] == "브라우저" for item in self.app.service.programs.catalog()))
+        dialog.close()
+
+    def test_voice_attachment_controls_work_without_entering_document_analysis(self):
+        self.app.attachments = [Attachment("a.txt", "data"), Attachment("b.txt", "data")]
+        self.app.refresh_attachments()
+        self.app.recognizer = lambda: "2번 첨부 제거해줘"
+        self.app.listen()
+        self.wait_for(lambda: not self.app.listening and not self.app.command_busy)
+        self.assertEqual([item.name for item in self.app.attachments], ["a.txt"])
+        self.app.recognizer = lambda: "첨부 비워줘"
+        self.app.listen()
+        self.wait_for(lambda: not self.app.listening and not self.app.command_busy)
+        self.assertEqual(self.app.attachments, [])
+
+    def test_voice_new_conversation_clears_history_and_attachments_without_an_extra_prompt(self):
+        self.app.service.history.append("이전 질문", "이전 답변", self.app.service.history.generation)
+        self.app.attachments = [Attachment("a.txt", "data")]
+        self.app.recognizer = lambda: "새 대화 시작해줘"
+        with patch("assistant.app.messagebox.askyesno", side_effect=AssertionError("no second voice prompt")):
+            self.app.listen()
+            self.wait_for(lambda: not self.app.listening and not self.app.command_busy)
+        self.assertEqual(self.app.service.history.messages(), [])
+        self.assertEqual(self.app.attachments, [])
+
+    def test_voice_close_app_stops_ui_polling_without_a_destroyed_tk_callback(self):
+        self.app.recognizer = lambda: "앱 종료해줘"
+        self.app.listen()
+        self.wait_for(lambda: self.app.closed)
+
+    def test_ai_can_change_speed_then_preview_with_only_the_final_voice_output(self):
+        save_settings(self.temp.name, "local:F1", True, ai_mode="local", ollama_model="qwen3:4b")
+        self.app.apply_settings()
+        self.app.recognizer = lambda: "새 속도를 적용하고 한 번 들려줘"
+        calls = [{"function": {"name": "change_settings", "arguments": {"voice_speed": 1.4}}},
+                 {"function": {"name": "control_app", "arguments": {"action": "test_voice"}}}]
+        with patch.object(self.app.service.ollama, "request", return_value={"content": "", "calls": calls}):
+            self.app.listen()
+            self.wait_for(lambda: self.voice.speak.called and not self.app.command_busy)
+        self.voice.speak.assert_called_once_with("안녕하세요. 당신의 개인 비서 루나예요.", "local:F1", speed=1.4)
+
+    def test_voice_search_preference_updates_an_open_search_window(self):
+        self.app.open_search()
+        dialog = self.app.search_dialog
+        dialog.query.set("검색어 유지")
+        self.app.recognizer = lambda: "검색 엔진 네이버로 바꿔줘"
+        self.app.listen()
+        self.wait_for(lambda: not self.app.listening and not self.app.command_busy)
+        self.assertEqual(dialog.provider.get(), "네이버")
+        self.assertEqual(dialog.query.get(), "검색어 유지")
+        dialog.close()
 
     def test_unregistered_program_request_opens_the_programs_tab(self):
         self.app.submit("등록안한브라우저 열어줘")

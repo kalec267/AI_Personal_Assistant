@@ -300,12 +300,12 @@ class LunaApp:
         else:
             self.append_message("루나", "안녕하세요. 당신의 개인 비서 루나예요. 일정을 정리하거나 PC를 제어해 보세요.")
 
-    def new_conversation(self):
+    def new_conversation(self, *, confirm=True):
         if self.command_busy:
             self.status_var.set("현재 요청이 끝난 뒤 새 대화를 시작해 주세요.")
             return False
         _, turns = self.service.history.snapshot()
-        if turns and not messagebox.askyesno("새 대화", "최근 대화를 초기화할까요? PC에 저장한 최근 대화도 비워집니다.", parent=self.root):
+        if confirm and turns and not messagebox.askyesno("새 대화", "최근 대화를 초기화할까요? PC에 저장한 최근 대화도 비워집니다.", parent=self.root):
             return False
         try:
             self.service.clear_conversation()
@@ -372,6 +372,8 @@ class LunaApp:
                 callback = callbacks[0 if succeeded else 1]
                 try:
                     callback(value)
+                    if self.closed:
+                        return
                 except Exception:
                     self.show_error(UserError("화면을 갱신하지 못했어요. 앱을 다시 시작해 주세요."))
         except queue.Empty:
@@ -400,19 +402,31 @@ class LunaApp:
         self.mic_button.configure(state="disabled")
         self.append_message("나", text)
         self.status_var.set("부탁하신 내용을 확인하고 있어요…")
-        self.run_task(functools.partial(self.service.execute, text, attachments=tuple(self.attachments), progress=self.analysis_progress.put), self._command_done, self._command_failed)
+        self.run_task(functools.partial(self.service.execute, text, attachments=tuple(self.attachments), progress=self.analysis_progress.put, view=self.view_context()), self._command_done, self._command_failed)
+
+    def view_context(self):
+        selected = self.tree.selection()
+        event = self.visible_events.get(selected[0]) if selected else None
+        return {"calendar_day": self.day_var.get(), "selected_event": dict(event) if event else None,
+                "settings": load_settings(self.data_dir),
+                "attachments": [{"index": index + 1, "name": item.name} for index, item in enumerate(self.attachments)],
+                "voices": [{key: item.get(key, "") for key in ("name", "culture", "gender")} for item in self.voice_items[:40]]}
 
     def _command_failed(self, error):
+        was_voice = self.voice_command
         self.command_busy = False
         self.voice_command = False
         self.send_button.configure(state="normal")
         self.mic_button.configure(state="normal")
         self.show_error(error)
+        if was_voice:
+            self.say(str(error))
 
     def _command_done(self, result):
+        was_voice = self.voice_command
         proposal = result.get("proposal")
         if proposal and self.voice_command and proposal.get("voice_auto", False) and not proposal.get("windows_command"):
-            # The spoken request authorizes ordinary app, sound and search actions.
+            # The spoken request authorizes the validated ordinary app action.
             # Execute the existing validated, one-use proposal without another prompt.
             self.status_var.set("음성 명령을 실행하고 있어요…")
             self.run_task(functools.partial(self.service.confirm_proposal, proposal["id"]), self._command_done, self._command_failed)
@@ -425,8 +439,24 @@ class LunaApp:
         self.send_button.configure(state="normal")
         self.mic_button.configure(state="normal")
         self.status_var.set(self.service.history.warning or "준비됐어요. 무엇을 도와드릴까요?")
+        if result.get("settings_changed"):
+            self.apply_settings()
+            if result.get("conversation_changed"):
+                self.render_conversation()
+                self.clear_attachments()
+            if self.config_dialog is not None and self.config_dialog.winfo_exists():
+                self.config_dialog.reflect_settings(result["settings_changed"])
+            if self.search_dialog is not None and self.search_dialog.winfo_exists():
+                self.search_dialog.reflect_settings(result["settings_changed"])
         self.append_message("루나", result["message"])
-        self.say(result["message"])
+        if not result.get("ui_actions"):
+            self.say(result["message"])
+        if result.get("calendar_changed"):
+            if result.get("calendar_day"):
+                self.day_var.set(result["calendar_day"])
+            self.refresh_events()
+        if result.get("programs_changed") and self.config_dialog is not None and self.config_dialog.winfo_exists():
+            self.config_dialog.refresh_programs()
         if result.get("saved_event"):
             self.day_var.set(result["saved_event"]["start"][:10])
             self.refresh_events()
@@ -449,6 +479,95 @@ class LunaApp:
                 self.voice_command = False
         else:
             self.voice_command = False
+        for directive in result.get("ui_actions", []):
+            try:
+                self.apply_ui_action(directive, from_voice=was_voice)
+                if self.closed:
+                    return
+            except (UserError, OSError, ValueError, tk.TclError) as error:
+                self.show_error(error)
+                if was_voice:
+                    self.say(str(error))
+
+    def apply_ui_action(self, args, *, from_voice=False):
+        kind = args["action"]
+        if kind in {"open_settings", "test_connection", "manage_api_key", "delete_api_key", "restart_admin", "register_program"}:
+            tab = {"register_program": "programs", "restart_admin": "windows"}.get(kind, args.get("tab", "ai"))
+            self.open_config(tab)
+            dialog = self.config_dialog
+            if kind == "register_program":
+                dialog.app_name.set(args.get("name", ""))
+                before = {item["id"] for item in self.service.programs.catalog()}
+                dialog.program_path = ""
+                dialog.choose_program()
+                if dialog.program_path:
+                    dialog.register_program()
+                    added = [item for item in self.service.programs.catalog() if item["id"] not in before]
+                    if added:
+                        message = f"‘{added[0]['name']}’ 프로그램을 등록했어요."
+                        self.append_message("루나", message)
+                        self.say(message)
+                    else:
+                        raise UserError(dialog.program_feedback.get())
+                else:
+                    self.status_var.set("프로그램 파일 선택을 취소했어요.")
+            elif kind == "test_connection":
+                dialog.test_connection()
+            elif kind == "manage_api_key":
+                if "persist" in args:
+                    dialog.persist.set(args["persist"])
+                dialog.key_entry.focus_set()
+            elif kind == "delete_api_key":
+                dialog.delete_key()
+            elif kind == "restart_admin":
+                dialog.restart_admin()
+        elif kind == "close_settings":
+            if self.config_dialog is not None:
+                self.config_dialog.close()
+        elif kind == "save_settings":
+            if self.config_dialog is not None and not self.config_dialog.save():
+                raise UserError(self.config_dialog.save_feedback.get())
+        elif kind == "open_search":
+            self.open_search()
+        elif kind == "listen":
+            self.listen()
+        elif kind == "add_event":
+            self.open_event()
+        elif kind == "attach_files":
+            self.choose_attachments()
+        elif kind == "show_attachments":
+            self.open_attachments()
+        elif kind == "clear_attachments":
+            self.clear_attachments()
+            self.status_var.set("첨부를 비웠어요.")
+        elif kind == "remove_attachment":
+            index = args["index"] - 1
+            if not 0 <= index < len(self.attachments):
+                raise UserError("해당 번호의 첨부가 없어요.")
+            self.attachments.pop(index)
+            self.refresh_attachments()
+        elif kind == "summarize_attachments":
+            self.summarize_attachments()
+        elif kind == "new_conversation":
+            self.new_conversation(confirm=False)
+        elif kind == "stop_speech":
+            self.stop_speech()
+        elif kind == "test_voice":
+            if self.config_dialog is not None:
+                self.config_dialog.test_voice()
+            else:
+                self.say("안녕하세요. 당신의 개인 비서 루나예요.", force=True)
+        elif kind == "install_voice":
+            self.install_voice()
+        elif kind == "install_wake":
+            self.install_wake()
+        elif kind == "show_calendar":
+            self.day_var.set(args.get("day", self.day_var.get()))
+            self.refresh_events()
+        elif kind == "export_calendar_dialog":
+            self.export_calendar()
+        elif kind == "close_app":
+            self.close()
 
     def confirm_actions(self, proposal):
         if proposal.get("windows_command"):
@@ -463,8 +582,8 @@ class LunaApp:
             self.config_dialog.lift()
         else:
             self.config_dialog = ConfigDialog(self)
-        if tab == "programs":
-            self.config_dialog.notebook.select(1)
+        if tab in {"ai", "programs", "sound", "windows"}:
+            self.config_dialog.notebook.select({"ai": 0, "programs": 1, "sound": 2, "windows": 3}[tab])
 
     def open_search(self, spec=None):
         from .search_dialog import SearchDialog
@@ -525,7 +644,7 @@ class LunaApp:
     def refresh_attachments(self):
         if self.attachments:
             names = ", ".join(item.name for item in self.attachments)
-            self.attachment_note.set(f"첨부 {len(self.attachments)}개 · {names[:90]}\n첨부 분석 모드 · 클릭하면 목록/읽기 안내 · PC 명령·검색은 비우기 후 사용")
+            self.attachment_note.set(f"첨부 {len(self.attachments)}개 · {names[:90]}\n클릭하면 목록/읽기 안내 · 명확한 앱 명령·검색도 사용할 수 있어요")
         else:
             self.attachment_note.set("첨부한 파일은 현재 대화에서만 유지됩니다.")
         if self.attachment_dialog is not None and self.attachment_dialog.winfo_exists():
@@ -644,10 +763,9 @@ class LunaApp:
     def sync_wake_availability(self):
         if self.wake is None or self.wake.failed:
             return
-        dialog = self.config_dialog is not None and self.config_dialog.winfo_exists()
         available = (not self.closed and not self.command_busy and (not self.listening or self.wake_listening)
                      and (not self.speech_active or self.settings.get("wake_during_speech", False))
-                     and not dialog and self.root.grab_current() is None)
+                     and self.root.grab_current() is None)
         if not available and self.wake_listening:
             self.wake_listening = False
             self.listening = False

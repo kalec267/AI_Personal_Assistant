@@ -7,6 +7,7 @@ import webbrowser
 from . import desktop, windows_control
 from .core import UserError
 from .search import search_spec, search_keywords, open_search
+from .app_commands import APP_ALLOWED, validate_app_action
 
 
 def website_url(value):
@@ -30,12 +31,12 @@ def website_url(value):
     return value
 
 
-def validate_calls(calls, programs, *, allow_windows=False):
+def validate_calls(calls, programs, *, allow_windows=False, calendar=None):
     if not isinstance(calls, list) or not 1 <= len(calls) <= 5:
         raise UserError("동작은 한 번에 1~5개까지만 제안할 수 있어요.")
     catalog = {app["id"]: app["name"] for app in programs.catalog()}
     actions = []
-    for call in calls:
+    for index, call in enumerate(calls):
         if not isinstance(call, dict) or not isinstance(call.get("function"), dict):
             raise UserError("AI 동작 형식이 올바르지 않아 실행하지 않았어요.")
         function = call["function"]
@@ -44,9 +45,18 @@ def validate_calls(calls, programs, *, allow_windows=False):
             raise UserError("AI 동작 인자가 올바르지 않아요.")
         allowed = {"launch_program": {"app_id"}, "set_volume": {"mode", "value"}, "open_website": {"url"},
                    "media_control": {"command"}, "create_event": {"title", "start", "end"}, "list_events": {"day"},
-                   "run_windows_command": {"command", "description"}, "search_web": {"query", "provider", "kind"}}
+                   "run_windows_command": {"command", "description"}, "search_web": {"query", "provider", "kind"}, **APP_ALLOWED}
         if not isinstance(name, str) or name not in allowed or args.keys() - allowed[name]:
             raise UserError("지원하지 않는 동작이나 인자가 포함되어 실행하지 않았어요.")
+        if name in APP_ALLOWED:
+            standalone = name == "undo_calendar" or name == "manage_program" and args.get("operation") == "register"
+            if name == "control_app" and len(calls) > 1:
+                standalone = index != len(calls) - 1 or args.get("action") not in (
+                    "open_settings", "close_settings", "open_search", "show_attachments", "test_voice", "stop_speech", "install_voice", "install_wake", "show_calendar")
+            if len(calls) != 1 and standalone:
+                raise UserError("화면 제어·파일 선택·되돌리기는 다른 동작과 나누어 요청하세요.")
+            actions.append(validate_app_action(name, args, programs, calendar))
+            continue
         if name == "launch_program":
             identifier = args.get("app_id")
             if not isinstance(identifier, str) or identifier not in catalog:

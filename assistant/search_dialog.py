@@ -57,6 +57,13 @@ class SearchDialog(tk.Toplevel):
         self.search_button.configure(state="disabled")
         self.app.run_task(functools.partial(open_search, spec["query"], provider, kind), self.done, self.failed)
 
+    def reflect_settings(self, keys):
+        options = load_settings(self.app.data_dir)
+        if "search_provider" in keys:
+            self.provider.set(PROVIDERS[options.get("search_provider", "google")])
+        if "search_kind" in keys:
+            self.kind.set(KINDS[options.get("search_kind", "web")])
+
     def done(self, message):
         if self.winfo_exists():
             self.feedback.set(message)

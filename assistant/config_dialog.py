@@ -101,7 +101,8 @@ class ConfigDialog(tk.Toplevel):
         ttk.Entry(frame, textvariable=self.vision_model).pack(fill="x", pady=(5, 8))
         ttk.Label(frame, text="이미지 입력 지원 모델이 필요합니다. 로컬 예: gemma3:4b\n별도로 ollama pull gemma3:4b 실행 후 입력하세요. 클라우드는 해당 계정에서 제공하는 이미지 모델을 지정하세요.", wraplength=580).pack(anchor="w", pady=(0, 12))
         ttk.Label(frame, text="Ollama API 키 · 클라우드에서만 사용").pack(anchor="w")
-        ttk.Entry(frame, textvariable=self.key, show="●").pack(fill="x", pady=5)
+        self.key_entry = ttk.Entry(frame, textvariable=self.key, show="●")
+        self.key_entry.pack(fill="x", pady=5)
         ttk.Checkbutton(frame, text="이 Windows 사용자에 키 암호화 저장", variable=self.persist).pack(anchor="w")
         ttk.Label(frame, text="기존 키는 표시하지 않습니다. 빈칸은 기존 키를 유지합니다.\n체크 해제 시 새로 입력한 키는 현재 세션에서만 사용합니다.", wraplength=580).pack(anchor="w", pady=8)
         row = ttk.Frame(frame)
@@ -347,6 +348,23 @@ class ConfigDialog(tk.Toplevel):
             self.voice_var.set(self.app.selected_voice())
         self.install_voice_button.configure(state="disabled" if self.app.installing_voice else "normal")
         self.install_wake_button.configure(state="disabled" if self.app.installing_wake else "normal")
+
+    def reflect_settings(self, keys):
+        options = load_settings(self.app.data_dir)
+        variables = {"voice": self.voice_var, "speak": self.speak, "voice_speed": self.voice_speed,
+                     "wake_enabled": self.wake_enabled, "wake_during_speech": self.wake_during_speech,
+                     "remember_chat": self.remember, "history_turns": self.history_turns, "volume": self.volume,
+                     "apply_volume_on_start": self.start_volume, "windows_control": self.windows_access,
+                     "ollama_model": self.model, "vision_model": self.vision_model}
+        for key in keys:
+            if key in variables and key in options:
+                variables[key].set(options[key])
+        if "ai_mode" in keys:
+            self.mode.set(next(label for label, mode in MODES.items() if mode == options.get("ai_mode", "off")))
+            self.model.set(options.get("ollama_model", "qwen3:4b"))
+        self.speed_changed(self.voice_speed.get())
+        self.volume_label.set(f"{round(self.volume.get())}%")
+        self.save_feedback.set("음성·AI 명령으로 변경한 설정을 반영했어요.")
 
     def test_voice(self):
         self.app.say("안녕하세요. 당신의 개인 비서 루나예요.", force=True, name=self.voice_var.get(), speed=round(self.voice_speed.get(), 2))

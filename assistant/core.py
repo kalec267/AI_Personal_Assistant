@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import re
 import sqlite3
 import uuid
@@ -18,6 +19,7 @@ class Calendar:
         self.path = path
         with self.connect() as db:
             db.execute("CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, title TEXT NOT NULL, start TEXT NOT NULL, end TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS calendar_changes (id INTEGER PRIMARY KEY AUTOINCREMENT, before_event TEXT, after_event TEXT)")
 
     @contextmanager
     def connect(self):
@@ -33,7 +35,8 @@ class Calendar:
         with self.connect() as db:
             return [dict(row) for row in db.execute("SELECT * FROM events ORDER BY start")]
 
-    def add(self, title, start, end):
+    @staticmethod
+    def event_values(title, start, end):
         title = str(title).strip()
         if not title or len(title) > 200:
             raise UserError("일정 제목은 1~200자로 입력해 주세요.")
@@ -45,15 +48,66 @@ class Calendar:
             raise UserError("시간대 없는 PC 현지 시간을 입력해 주세요.")
         if finish <= begin:
             raise UserError("종료 시간은 시작 시간 이후여야 합니다.")
-        event = dict(id=uuid.uuid4().hex, title=title, start=begin.isoformat(timespec="minutes"), end=finish.isoformat(timespec="minutes"))
+        return dict(title=title, start=begin.isoformat(timespec="minutes"), end=finish.isoformat(timespec="minutes"))
+
+    @staticmethod
+    def _record(db, before, after):
+        db.execute("INSERT INTO calendar_changes (before_event, after_event) VALUES (?, ?)",
+                   (json.dumps(before, ensure_ascii=False), json.dumps(after, ensure_ascii=False)))
+        db.execute("DELETE FROM calendar_changes WHERE id NOT IN (SELECT id FROM calendar_changes ORDER BY id DESC LIMIT 20)")
+
+    def add(self, title, start, end):
+        event = dict(id=uuid.uuid4().hex, **self.event_values(title, start, end))
         with self.connect() as db:
             db.execute("INSERT INTO events VALUES (:id, :title, :start, :end)", event)
+            self._record(db, None, event)
         return event
 
-    def delete(self, event_id):
+    def delete(self, event_id, *, expected=None):
         with self.connect() as db:
-            if not db.execute("DELETE FROM events WHERE id=?", (event_id,)).rowcount:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone()
+            if row is None:
                 raise UserError("일정을 찾을 수 없습니다.")
+            event = dict(row)
+            if expected is not None and event != expected:
+                raise UserError("일정이 변경되어 삭제하지 않았어요. 다시 요청하세요.")
+            db.execute("DELETE FROM events WHERE id=?", (event_id,))
+            self._record(db, event, None)
+
+    def update(self, event_id, title, start, end, *, expected=None):
+        event = dict(id=event_id, **self.event_values(title, start, end))
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone()
+            if row is None or expected is not None and dict(row) != expected:
+                raise UserError("일정이 삭제·변경되어 수정하지 않았어요. 다시 요청하세요.")
+            db.execute("UPDATE events SET title=:title, start=:start, end=:end WHERE id=:id", event)
+            self._record(db, dict(row), event)
+        return event
+
+    def last_change(self):
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM calendar_changes ORDER BY id DESC LIMIT 1").fetchone()
+        return {"id": row["id"], "before": json.loads(row["before_event"]), "after": json.loads(row["after_event"])} if row else None
+
+    def undo(self, *, expected_change=None):
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM calendar_changes ORDER BY id DESC LIMIT 1").fetchone()
+            if row is None or expected_change is not None and row["id"] != expected_change:
+                raise UserError("되돌릴 일정 변경이 없거나 최근 변경이 달라졌어요. 다시 요청하세요.")
+            before, after = json.loads(row["before_event"]), json.loads(row["after_event"])
+            identifier = (after or before)["id"]
+            current = db.execute("SELECT * FROM events WHERE id=?", (identifier,)).fetchone()
+            if (dict(current) if current else None) != after:
+                raise UserError("현재 일정이 달라져 덮어쓰지 않았어요. 일정을 확인하세요.")
+            if before is None:
+                db.execute("DELETE FROM events WHERE id=?", (identifier,))
+            else:
+                db.execute("INSERT OR REPLACE INTO events VALUES (:id, :title, :start, :end)", before)
+            db.execute("DELETE FROM calendar_changes WHERE id=?", (row["id"],))
+        return before
 
     def export(self):
         def escape(value):
