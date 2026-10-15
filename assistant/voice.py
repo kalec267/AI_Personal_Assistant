@@ -1,5 +1,6 @@
 """Native microphone capture and Windows installed speech voices."""
 import importlib
+import functools
 import json
 import os
 import subprocess
@@ -23,7 +24,8 @@ def preferred_voice(voices, saved=""):
 
 class WindowsVoice:
     def __init__(self):
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._generation = 0
         self._process = None
         self._closed = False
 
@@ -47,6 +49,7 @@ class WindowsVoice:
 
     def stop(self):
         with self._lock:
+            self._generation += 1
             if self._process is not None and self._process.poll() is None:
                 self._process.terminate()
             self._process = None
@@ -54,11 +57,17 @@ class WindowsVoice:
     def close(self):
         with self._lock:
             self._closed = True
-            if self._process is not None and self._process.poll() is None:
-                self._process.terminate()
-            self._process = None
+            self.stop()
 
-    def speak(self, text, name, *, speed=1.0):
+    def prepare(self, text, name, *, speed=1.0):
+        """Reserve speech before queuing a worker, so stop cancels queued work too."""
+        with self._lock:
+            self.stop()
+            return functools.partial(self.speak, text, name, speed=speed, generation=self._generation)
+
+    def speak(self, text, name, *, speed=1.0, generation=None):
+        if generation is None:
+            return self.prepare(text, name, speed=speed)()
         try:
             speed = check_voice_speed(speed)
         except ValueError as error:
@@ -69,7 +78,7 @@ class WindowsVoice:
         payload = json.dumps({"text": str(text)[:2000], "voice": name, "speed": speed}, ensure_ascii=False)
         try:
             with self._lock:
-                if self._closed:
+                if self._closed or generation != self._generation:
                     return
                 if self._process is not None and self._process.poll() is None:
                     self._process.terminate()
@@ -97,6 +106,7 @@ class VoiceRouter:
     def __init__(self, folder):
         self.local = LocalVoice(folder)
         self.windows = WindowsVoice()
+        self._lock = threading.RLock()
 
     def list(self):
         voices = self.local.list()
@@ -108,16 +118,23 @@ class VoiceRouter:
         return voices
 
     def speak(self, text, name, *, speed=1.0):
-        self.stop()
-        return (self.local if name.startswith("local:") else self.windows).speak(text, name, speed=speed)
+        return self.prepare(text, name, speed=speed)()
+
+    def prepare(self, text, name, *, speed=1.0):
+        with self._lock:
+            selected, other = (self.local, self.windows) if name.startswith("local:") else (self.windows, self.local)
+            other.stop()
+            return selected.prepare(text, name, speed=speed)
 
     def stop(self):
-        self.local.stop()
-        self.windows.stop()
+        with self._lock:
+            self.local.stop()
+            self.windows.stop()
 
     def close(self):
-        self.local.close()
-        self.windows.close()
+        with self._lock:
+            self.local.close()
+            self.windows.close()
 
 
 def recognize_once():

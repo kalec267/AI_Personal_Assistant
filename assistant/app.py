@@ -88,6 +88,7 @@ class LunaApp:
         self.command_busy = False
         self.voice_command = False
         self.listening = False
+        self.speech_generation = 0
         self.voice_items = []
         self.installing_voice = False
         self.last_dialog = None
@@ -313,7 +314,7 @@ class LunaApp:
         self.voice_speed = self.settings.get("voice_speed", 1.0)
         self.mode_var.set({"off": "기본 명령", "local": "Ollama 로컬", "cloud": "Ollama 클라우드"}.get(self.settings.get("ai_mode", "off"), "기본 명령") + " · 데스크톱")
         if not self.speak_var.get():
-            self.voice.stop()
+            self.stop_speech()
         if self.selected_voice():
             self.voice_note.set(self._voice_description(self.selected_voice()))
         if changed:
@@ -375,6 +376,7 @@ class LunaApp:
         text = (self.command_var.get() if text is None else text).strip()
         if not text:
             return
+        self.stop_speech()
         self.command_busy = True
         self.voice_command = from_voice
         self.command_var.set("")
@@ -588,7 +590,7 @@ class LunaApp:
         if self.listening or self.command_busy:
             return
         self.listening = True
-        self.voice.stop()
+        self.stop_speech()
         self.mic_button.configure(state="disabled", text="듣는 중…")
         self.send_button.configure(state="disabled")
         self.status_var.set("주변 소음 확인 후 듣습니다. 잠시 뒤 말씀해 주세요. 최대 10초 동안 인식해요.")
@@ -669,7 +671,11 @@ class LunaApp:
     def _toggle_speech(self):
         self.persist_settings()
         if not self.speak_var.get():
-            self.voice.stop()
+            self.stop_speech()
+
+    def stop_speech(self):
+        self.speech_generation += 1
+        self.voice.stop()
 
     def say(self, text, force=False, name=None, speed=None):
         if not force and not self.speak_var.get():
@@ -682,7 +688,21 @@ class LunaApp:
         if self.listening:
             return
         speed = self.voice_speed if speed is None else speed
-        self.run_task(functools.partial(self.voice.speak, text, name, speed=speed), lambda _value: None, lambda error: self.voice_note.set(str(error)))
+        self.speech_generation += 1
+        generation = self.speech_generation
+
+        def failed(error):
+            if not self.closed and generation == self.speech_generation:
+                self.voice_note.set(str(error))
+
+        # Reserve on the UI thread. A worker that starts late must keep its old
+        # ticket rather than cancelling or reviving speech for a newer command.
+        try:
+            work = self.voice.prepare(text, name, speed=speed)
+        except (UserError, OSError, RuntimeError) as error:
+            failed(error)
+            return
+        self.run_task(work, lambda _value: None, failed)
 
     def close(self):
         if self.closed:

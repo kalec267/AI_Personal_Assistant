@@ -1,6 +1,7 @@
 """Offline Korean Supertonic speech. Networking is restricted to explicit install."""
 import argparse
 import array
+import functools
 import hashlib
 import importlib
 import os
@@ -79,6 +80,9 @@ class LocalVoice:
     def __init__(self, folder):
         self.folder = Path(folder)
         self._lock = threading.Lock()
+        self._state_lock = threading.RLock()
+        self._cancelled = threading.Event()
+        self._playing = False
         self._generation = 0
         self._closed = False
         self._tts = None
@@ -143,28 +147,61 @@ class LocalVoice:
         return audio
 
     def stop(self):
-        self._generation += 1
-        if os.name == "nt":
-            import winsound
-            winsound.PlaySound(None, 0)
+        # Never wait for the synthesis lock on the UI thread.
+        with self._state_lock:
+            self._generation += 1
+            self._cancelled.set()
+            if self._playing:
+                import winsound
+                winsound.PlaySound(None, 0)
+                self._playing = False
 
     def close(self):
-        self._closed = True
-        self.stop()
+        with self._state_lock:
+            self._closed = True
+            self.stop()
 
-    def speak(self, text, name, *, speed=1.0):
-        if os.name != "nt":
-            raise UserError("앱 음성 재생은 Windows에서 지원합니다.")
-        generation = self._generation
-        with self._lock:
+    def prepare(self, text, name, *, speed=1.0):
+        with self._state_lock:
+            self.stop()
+            self._cancelled = threading.Event()
+            return functools.partial(self.speak, text, name, speed=speed, generation=self._generation)
+
+    def speak(self, text, name, *, speed=1.0, generation=None):
+        if generation is None:
+            return self.prepare(text, name, speed=speed)()
+        with self._state_lock:
             if self._closed or generation != self._generation:
                 return
-            with tempfile.TemporaryDirectory(prefix="luna-speech-") as folder:
-                filename = Path(folder) / "speech.wav"
+            cancelled = self._cancelled
+        if os.name != "nt":
+            raise UserError("앱 음성 재생은 Windows에서 지원합니다.")
+        with tempfile.TemporaryDirectory(prefix="luna-speech-") as folder:
+            filename = Path(folder) / "speech.wav"
+            with self._lock:
+                if cancelled.is_set():
+                    return
                 self.synthesize(text, name, filename, speed=speed)
-                if not self._closed and generation == self._generation:
-                    import winsound
-                    winsound.PlaySound(str(filename), winsound.SND_FILENAME)
+            if cancelled.is_set():
+                return
+            with wave.open(str(filename), "rb") as audio:
+                duration = audio.getnframes() / audio.getframerate()
+            with self._state_lock:
+                if self._closed or cancelled.is_set():
+                    return
+                import winsound
+                # Start and stop share a short lock. Synchronous playback here
+                # would prevent a new command from stopping the current sound.
+                winsound.PlaySound(str(filename), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+                self._playing = True
+            try:
+                # Keep the temporary WAV alive until playback ends or is stopped.
+                cancelled.wait(duration + 0.2)
+            finally:
+                with self._state_lock:
+                    if generation == self._generation and self._playing:
+                        winsound.PlaySound(None, 0)
+                        self._playing = False
 
 
 def main():

@@ -1,4 +1,5 @@
 import datetime as dt
+import functools
 import gc
 import json
 import os
@@ -8,7 +9,7 @@ import time
 import tkinter as tk
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from assistant.app import LunaApp
 from assistant.core import UserError
@@ -73,11 +74,11 @@ class VoiceTests(unittest.TestCase):
     def test_speed_reaches_both_voice_backends(self):
         with tempfile.TemporaryDirectory() as folder:
             router = VoiceRouter(folder)
-            with patch.object(router, "stop"), patch.object(router.local, "speak") as local, patch.object(router.windows, "speak") as windows:
+            with patch.object(router.local, "speak") as local, patch.object(router.windows, "speak") as windows:
                 router.speak("테스트", "local:F2", speed=0.8)
-                local.assert_called_once_with("테스트", "local:F2", speed=0.8)
+                local.assert_called_once_with("테스트", "local:F2", speed=0.8, generation=ANY)
                 router.speak("테스트", "한국어 여성", speed=1.6)
-                windows.assert_called_once_with("테스트", "한국어 여성", speed=1.6)
+                windows.assert_called_once_with("테스트", "한국어 여성", speed=1.6, generation=ANY)
 
     def test_real_gender_metadata_is_used_for_default(self):
         voices = [{"name": "Male Korean", "culture": "ko-KR", "gender": "Male"},
@@ -147,6 +148,7 @@ class NativeUITests(unittest.TestCase):
             self.skipTest(f"GUI display unavailable: {error}")
         self.temp = tempfile.TemporaryDirectory()
         self.voice = MagicMock()
+        self.voice.prepare.side_effect = lambda *args, **kwargs: functools.partial(self.voice.speak, *args, **kwargs)
         self.app = LunaApp(self.root, self.temp.name, voice=self.voice, recognizer=lambda: "메모장 실행", load_voices=False)
         self.app.speak_var.set(False)
         self.root.update()
@@ -164,6 +166,39 @@ class NativeUITests(unittest.TestCase):
                 return
             time.sleep(0.01)
         self.fail("Desktop callback did not complete")
+
+    def test_new_text_command_stops_speech_before_execution_and_reads_new_reply(self):
+        self.app.speak_var.set(True)
+        self.app.voice_var.set("local:F1")
+        calls = []
+        self.voice.stop.side_effect = lambda: calls.append("stop")
+        self.voice.speak.side_effect = lambda text, *args, **kwargs: calls.append(text)
+        with patch.object(self.app.service, "execute", side_effect=lambda *args, **kwargs: calls.append("execute") or {"message": "새 답변"}):
+            self.app.submit("새 명령")
+            self.wait_for(lambda: "새 답변" in calls)
+        self.assertEqual(calls, ["stop", "execute", "새 답변"])
+
+    def test_microphone_stops_speech_before_capturing_audio(self):
+        calls = []
+        self.voice.stop.side_effect = lambda: calls.append("stop")
+        self.app.recognizer = lambda: calls.append("listen") or ""
+        self.app.listen()
+        self.wait_for(lambda: not self.app.listening)
+        self.assertEqual(calls, ["stop", "listen"])
+
+    def test_cancelled_speech_error_cannot_replace_current_voice_status(self):
+        queued = []
+        self.app.speak_var.set(True)
+        self.app.voice_var.set("local:F1")
+        with patch.object(self.app, "run_task", side_effect=lambda *args: queued.append(args)):
+            self.app.say("이전 답변")
+            self.app.stop_speech()
+            self.app.voice_note.set("새 답변 준비 중")
+            queued[0][2](UserError("이전 음성 오류"))
+            self.assertEqual(self.app.voice_note.get(), "새 답변 준비 중")
+            self.app.say("새 답변")
+            queued[1][2](UserError("현재 음성 오류"))
+            self.assertEqual(self.app.voice_note.get(), "현재 음성 오류")
 
     def test_command_draft_save_restart_delete_export(self):
         self.app.submit("내일 오후 3시 팀 회의 일정 추가")

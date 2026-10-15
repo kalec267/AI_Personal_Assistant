@@ -216,7 +216,7 @@ class ConfigDialog(tk.Toplevel):
         self.app.command_busy = True
         self.app.send_button.configure(state="disabled")
         self.app.mic_button.configure(state="disabled")
-        self.app.voice.stop()
+        self.app.stop_speech()
         self.admin_button.configure(state="disabled")
         self.windows_feedback.set("Windows UAC 승인을 기다리고 있어요…")
         self.app.run_task(functools.partial(windows_control.restart_as_admin, self.app.data_dir),
