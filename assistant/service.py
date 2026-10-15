@@ -12,8 +12,9 @@ from .core import UserError
 from .actions import validate_calls, perform
 from .credentials import Credentials
 from .ollama import Ollama
+from .openai import OpenAI
 from .programs import Programs
-from .settings import load_settings, save_settings
+from .settings import load_settings, save_settings, model_settings, selected_model
 from .history import ConversationMemory
 from .attachments import validate_attachments
 from .search import parse_search
@@ -25,8 +26,10 @@ class AssistantService:
         self.calendar = Calendar(Path(data_dir) / "calendar.sqlite3")
         self.data_dir = Path(data_dir)
         self.credentials = Credentials(data_dir)
+        self.openai_credentials = Credentials(data_dir, "openai")
         self.programs = Programs(data_dir)
         self.ollama = Ollama(self.credentials)
+        self.openai = OpenAI(self.openai_credentials)
         self._proposals = {}
         self._lock = threading.Lock()
         self.history = ConversationMemory(data_dir)
@@ -35,12 +38,18 @@ class AssistantService:
     def sync_settings(self, options=None):
         options = load_settings(self.data_dir) if options is None else options
         mode = options.get("ai_mode", "off")
-        model = options.get("ollama_model") or ("gpt-oss:120b" if mode == "cloud" else "qwen3:4b")
+        model = selected_model(options)
         with self._lock:
             changed = self.history.configure((mode, model), options.get("remember_chat", False), options.get("history_turns", 10))
             if changed:
                 self._proposals.clear()
         return changed
+
+    def client_for(self, mode):
+        return self.openai if mode == "openai" else self.ollama
+
+    def credentials_for(self, mode):
+        return self.openai_credentials if mode == "openai" else self.credentials
 
     def clear_conversation(self):
         with self._lock:
@@ -83,7 +92,7 @@ class AssistantService:
         if attachments:
             validate_attachments(attachments)
             if options.get("ai_mode", "off") == "off":
-                raise UserError("첨부 분석에는 Ollama가 필요해요. 설정 → AI · 대화에서 로컬 또는 클라우드를 선택하세요.")
+                raise UserError("첨부 분석에는 AI 연결이 필요해요. 설정 → AI · 대화에서 Ollama 또는 ChatGPT를 선택하세요.")
             return self._interpret(text, options, attachments=attachments, progress=progress)
         if options.get("ai_mode", "off") != "off":
             # Use the model for the entire utterance, so multi-step requests are
@@ -108,13 +117,14 @@ class AssistantService:
             # AI off must not contact an unrelated provider because a legacy
             # environment variable happens to exist on the user's machine.
             return {"message": "현재는 기본 명령 모드예요. 자연어 대화와 명령을 사용하려면 "
-                    "상단 ‘설정’에서 Ollama 로컬 또는 Ollama 클라우드를 선택하고 설정을 저장해 주세요. "
-                    "클라우드 키는 그 창의 ‘Ollama API 키’에 입력하세요.", "open_settings": True}
+                    "상단 ‘설정’에서 Ollama 로컬·클라우드 또는 ChatGPT를 선택하고 설정을 저장해 주세요. "
+                    "API 키는 선택한 서비스의 키 입력란에 입력하세요.", "open_settings": True}
         return {"message": message}
 
     def _interpret(self, text, options, *, attachments=(), progress=None, view=None):
         mode = options.get("ai_mode", "local")
-        model = options.get("ollama_model") or ("gpt-oss:120b" if mode == "cloud" else "qwen3:4b")
+        model = selected_model(options)
+        client = self.client_for(mode)
         with self._lock:
             if self.history.scope != (mode, model):
                 raise UserError("대화 설정이 변경되었어요. 새 설정에서 다시 요청해 주세요.")
@@ -122,11 +132,12 @@ class AssistantService:
         messages = [message for turn in turns for message in (
             {"role": "user", "content": turn["user"]}, {"role": "assistant", "content": turn["assistant"]})]
         if attachments:
-            analysis_model = (options.get("vision_model") or model) if any(item.image for item in attachments) else model
-            result = self.ollama.analyze(mode, analysis_model, text, attachments, history=messages, progress=progress,
+            _, vision_key, _ = model_settings(mode)
+            analysis_model = (options.get(vision_key) or model) if any(item.image for item in attachments) else model
+            result = client.analyze(mode, analysis_model, text, attachments, history=messages, progress=progress,
                                          cancelled=lambda: generation != self.history.snapshot()[0])
         else:
-            result = self.ollama.request(mode, model, text, self.programs.catalog(), history=messages,
+            result = client.request(mode, model, text, self.programs.catalog(), history=messages,
                                          allow_windows=options.get("windows_control", False), app_context=view)
         with self._lock:
             if generation != self.history.generation:
@@ -206,14 +217,16 @@ class AssistantService:
             return {"message": "현재 사용자 설정: " + describe_settings(options) + "\n등록 프로그램: " + (", ".join(item["name"] for item in self.programs.catalog()) or "없음") + "\n" + self._list_action({"args": {}})}
         if name == "change_settings":
             current = load_settings(self.data_dir)
-            if args.get("ai_mode") == "cloud" and not self.credentials.get():
-                raise UserError("클라우드 API 키를 먼저 설정 창에 등록해 주세요.")
+            new_mode = args.get("ai_mode")
+            if new_mode in {"cloud", "openai"} and not self.credentials_for(new_mode).get():
+                provider = "OpenAI" if new_mode == "openai" else "Ollama 클라우드"
+                raise UserError(f"{provider} API 키를 먼저 설정 창에 등록해 주세요.")
             if "voice" in args and not args["voice"].startswith("local:") and args["voice"] != current.get("voice"):
                 from .voice import WindowsVoice
                 if args["voice"] not in {item["name"] for item in WindowsVoice().list()}:
                     raise UserError("설치된 음성 이름을 확인하세요.")
             values = {**current, **args}
-            if "ai_mode" in args and "ollama_model" not in args and current.get("ollama_model", "qwen3:4b") in {"qwen3:4b", "gpt-oss:120b"}:
+            if new_mode in {"local", "cloud"} and "ollama_model" not in args and current.get("ollama_model", "qwen3:4b") in {"qwen3:4b", "gpt-oss:120b"}:
                 values["ollama_model"] = "gpt-oss:120b" if args["ai_mode"] == "cloud" else "qwen3:4b"
             voice, speak = values.pop("voice", ""), values.pop("speak", True)
             save_settings(self.data_dir, voice, speak, **values)

@@ -7,10 +7,11 @@ from tkinter import filedialog, ttk
 
 from . import desktop, windows_control
 from .core import UserError
-from .settings import load_settings, save_settings
+from .settings import load_settings, save_settings, model_settings, selected_model
 from .theme import PAPER, BLUE, MUTED
 
-MODES = {"기본 명령 (AI 끔)": "off", "Ollama 로컬 · API 키 불필요": "local", "Ollama 클라우드 · API 키 필요": "cloud"}
+MODES = {"기본 명령 (AI 끔)": "off", "Ollama 로컬 · API 키 불필요": "local", "Ollama 클라우드 · API 키 필요": "cloud",
+         "ChatGPT · OpenAI API 키 필요": "openai"}
 
 
 class SettingsPage(ttk.Frame):
@@ -38,9 +39,12 @@ class ConfigDialog(tk.Toplevel):
         self.transient(app.root)
         options = load_settings(app.data_dir)
         self.mode = tk.StringVar(value=next(label for label, value in MODES.items() if value == options.get("ai_mode", "off")))
-        self.model = tk.StringVar(value=options.get("ollama_model", "qwen3:4b"))
-        self.vision_model = tk.StringVar(value=options.get("vision_model", ""))
+        self._display_mode = options.get("ai_mode", "off")
+        self._model_drafts = {}
+        self.model = tk.StringVar(value=selected_model(options))
+        self.vision_model = tk.StringVar(value=options.get(model_settings(self._display_mode)[1], ""))
         self.key = tk.StringVar()
+        self.key_label = tk.StringVar(value=self.api_key_label())
         self.persist = tk.BooleanVar(value=os.name == "nt")
         self.remember = tk.BooleanVar(value=options.get("remember_chat", False))
         self.history_turns = tk.IntVar(value=options.get("history_turns", 10))
@@ -55,7 +59,8 @@ class ConfigDialog(tk.Toplevel):
         self.start_volume = tk.BooleanVar(value=options.get("apply_volume_on_start", False))
         self.windows_access = tk.BooleanVar(value=options.get("windows_control", False))
         self.windows_feedback = tk.StringVar()
-        self.feedback = tk.StringVar(value=app.service.credentials.status())
+        self.feedback = tk.StringVar(value=app.service.credentials_for(self._display_mode).status())
+        self.mode.trace_add("write", self.mode_changed)
         self.save_feedback = tk.StringVar(value="변경 후 ‘설정 저장’을 눌러 적용하세요.")
         self.sound_feedback = tk.StringVar()
         self.program_feedback = tk.StringVar()
@@ -96,21 +101,21 @@ class ConfigDialog(tk.Toplevel):
         mode.bind("<<ComboboxSelected>>", self.mode_changed)
         ttk.Label(frame, text="모델 이름").pack(anchor="w")
         ttk.Entry(frame, textvariable=self.model).pack(fill="x", pady=(5, 10))
-        ttk.Label(frame, text="로컬: qwen3:4b · 클라우드: gpt-oss:120b\n로컬 모드는 Ollama 설치 후 모델 다운로드가 필요합니다.", wraplength=580).pack(anchor="w", pady=(0, 12))
+        ttk.Label(frame, text="Ollama 로컬: qwen3:4b · Ollama 클라우드: gpt-oss:120b\nChatGPT: gpt-4.1-mini · 계정에서 사용 가능한 모델 이름으로 변경할 수 있습니다.\nOpenAI API는 ChatGPT 구독과 별도 과금됩니다.", wraplength=580).pack(anchor="w", pady=(0, 12))
         ttk.Label(frame, text="이미지 분석 모델 · 빈칸이면 위 모델 사용").pack(anchor="w")
         ttk.Entry(frame, textvariable=self.vision_model).pack(fill="x", pady=(5, 8))
-        ttk.Label(frame, text="이미지 입력 지원 모델이 필요합니다. 로컬 예: gemma3:4b\n별도로 ollama pull gemma3:4b 실행 후 입력하세요. 클라우드는 해당 계정에서 제공하는 이미지 모델을 지정하세요.", wraplength=580).pack(anchor="w", pady=(0, 12))
-        ttk.Label(frame, text="Ollama API 키 · 클라우드에서만 사용").pack(anchor="w")
+        ttk.Label(frame, text="이미지 입력 지원 모델이 필요합니다. Ollama 로컬 예: gemma3:4b (별도 다운로드).\nOpenAI gpt-4.1-mini는 이미지를 지원하므로 빈칸으로 사용할 수 있습니다.", wraplength=580).pack(anchor="w", pady=(0, 12))
+        ttk.Label(frame, textvariable=self.key_label).pack(anchor="w")
         self.key_entry = ttk.Entry(frame, textvariable=self.key, show="●")
         self.key_entry.pack(fill="x", pady=5)
         ttk.Checkbutton(frame, text="이 Windows 사용자에 키 암호화 저장", variable=self.persist).pack(anchor="w")
-        ttk.Label(frame, text="기존 키는 표시하지 않습니다. 빈칸은 기존 키를 유지합니다.\n체크 해제 시 새로 입력한 키는 현재 세션에서만 사용합니다.", wraplength=580).pack(anchor="w", pady=8)
+        ttk.Label(frame, text="기존 키는 표시하지 않습니다. 빈칸은 선택한 서비스의 기존 키를 유지합니다.\n체크 해제 시 새 키는 현재 세션에서만 사용합니다. 연결 방식 변경 시 입력 중인 키는 비웁니다.\n키 발급: platform.openai.com/api-keys 또는 ollama.com/settings/keys", wraplength=580).pack(anchor="w", pady=8)
         row = ttk.Frame(frame)
         row.pack(fill="x", pady=(0, 15))
         ttk.Button(row, text="연결 테스트", command=self.test_connection).pack(side="left")
         ttk.Button(row, text="저장한 키 삭제", command=self.delete_key).pack(side="right")
         ttk.Separator(frame).pack(fill="x", pady=8)
-        ttk.Label(frame, text="Ollama에 함께 보낼 최근 질문·답변 수").pack(anchor="w", pady=(8, 5))
+        ttk.Label(frame, text="선택한 AI에 함께 보낼 최근 질문·답변 수").pack(anchor="w", pady=(8, 5))
         ttk.Spinbox(frame, from_=1, to=20, textvariable=self.history_turns, width=7).pack(anchor="w")
         ttk.Checkbutton(frame, text="최근 대화를 이 PC에 저장해 앱 재시작 후에도 이어가기", variable=self.remember).pack(anchor="w", pady=(10, 5))
         ttk.Label(frame, text="선택하지 않아도 앱을 사용하는 동안 최근 대화를 기억합니다.\n저장 기록은 암호화되지 않은 개인 파일이며, 클라우드 모드에서는 최근 대화도 전송됩니다.\n모델·연결 방식 변경 또는 ‘새 대화’를 누르면 문맥을 초기화합니다.", wraplength=580).pack(anchor="w", pady=8)
@@ -182,9 +187,26 @@ class ConfigDialog(tk.Toplevel):
         ttk.Label(frame, text="볼륨 값은 ‘설정 저장’으로 기억합니다. ‘지금 볼륨 적용’은 현재 PC의 소리를 바꿉니다.", wraplength=580).pack(anchor="w", pady=8)
         ttk.Label(frame, textvariable=self.sound_feedback, wraplength=580).pack(anchor="w", pady=8)
 
-    def mode_changed(self, _event=None):
-        if self.model.get() in {"qwen3:4b", "gpt-oss:120b", ""}:
-            self.model.set("gpt-oss:120b" if MODES[self.mode.get()] == "cloud" else "qwen3:4b")
+    def api_key_label(self):
+        return "OpenAI API 키 · ChatGPT 연결 전용" if MODES.get(self.mode.get()) == "openai" else "Ollama API 키 · 클라우드에서만 사용"
+
+    def mode_changed(self, *_event):
+        mode = MODES.get(self.mode.get(), "off")
+        if mode == self._display_mode:
+            return
+        self._model_drafts[self._display_mode] = (self.model.get(), self.vision_model.get())
+        self._display_mode = mode
+        options = load_settings(self.app.data_dir)
+        model_key, vision_key, default = model_settings(mode)
+        model = options.get(model_key) or default
+        if mode in {"local", "cloud"} and model in {"qwen3:4b", "gpt-oss:120b"}:
+            model = default
+        model, vision = self._model_drafts.get(mode, (model, options.get(vision_key, "")))
+        self.model.set(model)
+        self.vision_model.set(vision)
+        self.key.set("")
+        self.key_label.set(self.api_key_label())
+        self.feedback.set(self.app.service.credentials_for(mode).status())
 
     def _build_windows(self, frame):
         self.heading(frame, "Windows 조작 권한")
@@ -258,15 +280,18 @@ class ConfigDialog(tk.Toplevel):
                 raise UserError("음성 출력 속도는 0.5~2.0배로 설정하세요.")
             if not 1 <= turns <= 20 or not 0 <= volume <= 100:
                 raise UserError("최근 대화 수는 1~20, 볼륨은 0~100으로 설정하세요.")
+            mode = MODES[self.mode.get()]
+            credentials = self.app.service.credentials_for(mode)
             if self.key.get().strip():
-                self.app.service.credentials.set(self.key.get(), self.persist.get())
+                credentials.set(self.key.get(), self.persist.get())
                 self.key.set("")
-            save_settings(self.app.data_dir, self.voice_var.get(), self.speak.get(), ai_mode=MODES[self.mode.get()],
-                          ollama_model=model, remember_chat=self.remember.get(), history_turns=turns,
-                          volume=volume, apply_volume_on_start=self.start_volume.get(), windows_control=self.windows_access.get(), vision_model=vision_model,
+            model_key, vision_key, _ = model_settings(mode)
+            save_settings(self.app.data_dir, self.voice_var.get(), self.speak.get(), ai_mode=mode,
+                          **{model_key: model, vision_key: vision_model}, remember_chat=self.remember.get(), history_turns=turns,
+                          volume=volume, apply_volume_on_start=self.start_volume.get(), windows_control=self.windows_access.get(),
                           voice_speed=speed, wake_enabled=self.wake_enabled.get(), wake_during_speech=self.wake_during_speech.get())
             self.app.apply_settings()
-            self.feedback.set("사용자 설정 저장 완료 · " + self.app.service.credentials.status())
+            self.feedback.set("사용자 설정 저장 완료 · " + credentials.status())
             self.save_feedback.set("사용자 설정을 저장했어요. 재실행 후에도 유지됩니다.")
             self.sound_feedback.set("목소리·출력 속도·답변 읽기·볼륨 기본값을 저장했어요.")
             return True
@@ -281,25 +306,28 @@ class ConfigDialog(tk.Toplevel):
             return
         mode = MODES[self.mode.get()]
         if mode == "off":
-            self.feedback.set("로컬 또는 클라우드 모드를 선택하세요.")
+            self.feedback.set("Ollama 또는 ChatGPT 연결을 선택하세요.")
             return
-        self.feedback.set("Ollama 연결 확인 중…")
-        work = functools.partial(self.app.service.ollama.request, mode, self.model.get(), "연결 확인입니다. 조작 없이 짧게 인사만 해 주세요.", self.app.service.programs.catalog())
-        self.app.run_task(work, self.connection_done, self.connection_failed)
+        client = self.app.service.client_for(mode)
+        model = self.model.get()
+        self.feedback.set(client.name + " 연결 확인 중…")
+        work = functools.partial(client.request, mode, model, "연결 확인입니다. 조작 없이 짧게 인사만 해 주세요.", self.app.service.programs.catalog())
+        self.app.run_task(work, functools.partial(self.connection_done, mode, model), functools.partial(self.connection_failed, mode, model))
 
-    def connection_done(self, _result):
-        if self.winfo_exists():
-            self.feedback.set("Ollama 연결 성공. 이제 자연어로 요청해 보세요.")
+    def connection_done(self, mode, model, _result):
+        if self.winfo_exists() and MODES[self.mode.get()] == mode and self.model.get() == model:
+            self.feedback.set(self.app.service.client_for(mode).name + " 연결 성공. 이제 자연어로 요청해 보세요.")
 
-    def connection_failed(self, error):
-        if self.winfo_exists():
+    def connection_failed(self, mode, model, error):
+        if self.winfo_exists() and MODES[self.mode.get()] == mode and self.model.get() == model:
             self.feedback.set(str(error))
 
     def delete_key(self):
         try:
-            self.app.service.credentials.delete()
+            credentials = self.app.service.credentials_for(MODES[self.mode.get()])
+            credentials.delete()
             self.key.set("")
-            self.feedback.set(self.app.service.credentials.status())
+            self.feedback.set(credentials.status())
         except OSError:
             self.feedback.set("키를 삭제하지 못했어요.")
 
@@ -354,14 +382,17 @@ class ConfigDialog(tk.Toplevel):
         variables = {"voice": self.voice_var, "speak": self.speak, "voice_speed": self.voice_speed,
                      "wake_enabled": self.wake_enabled, "wake_during_speech": self.wake_during_speech,
                      "remember_chat": self.remember, "history_turns": self.history_turns, "volume": self.volume,
-                     "apply_volume_on_start": self.start_volume, "windows_control": self.windows_access,
-                     "ollama_model": self.model, "vision_model": self.vision_model}
+                     "apply_volume_on_start": self.start_volume, "windows_control": self.windows_access}
+        if "ai_mode" in keys:
+            self.mode.set(next(label for label, mode in MODES.items() if mode == options.get("ai_mode", "off")))
+        model_key, vision_key, _ = model_settings(MODES[self.mode.get()])
+        variables.update({model_key: self.model, vision_key: self.vision_model})
         for key in keys:
             if key in variables and key in options:
                 variables[key].set(options[key])
         if "ai_mode" in keys:
-            self.mode.set(next(label for label, mode in MODES.items() if mode == options.get("ai_mode", "off")))
-            self.model.set(options.get("ollama_model", "qwen3:4b"))
+            self.model.set(selected_model(options))
+            self.vision_model.set(options.get(vision_key, ""))
         self.speed_changed(self.voice_speed.get())
         self.volume_label.set(f"{round(self.volume.get())}%")
         self.save_feedback.set("음성·AI 명령으로 변경한 설정을 반영했어요.")

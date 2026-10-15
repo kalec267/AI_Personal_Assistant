@@ -29,7 +29,7 @@ def _crypt(data, decrypt=False):
     else:
         function = crypt32.CryptProtectData
         function.argtypes = [ctypes.POINTER(Blob), wintypes.LPCWSTR, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(Blob)]
-        ok = function(ctypes.byref(source), "Luna Ollama", None, None, None, 1, ctypes.byref(output))
+        ok = function(ctypes.byref(source), "Luna API key", None, None, None, 1, ctypes.byref(output))
     if not ok:
         raise UserError("API 키 암호화 저장소에 접근할 수 없습니다. 같은 Windows 사용자로 실행해 주세요.")
     try:
@@ -39,14 +39,17 @@ def _crypt(data, decrypt=False):
 
 
 class Credentials:
-    def __init__(self, folder):
-        self.path = Path(folder) / "ollama-key.dpapi"
+    def __init__(self, folder, provider="ollama"):
+        if provider not in {"ollama", "openai"}:
+            raise ValueError("Unknown credential provider")
+        self.path = Path(folder) / f"{provider}-key.dpapi"
+        self.env_names = (f"LUNA_{provider.upper()}_API_KEY", f"{provider.upper()}_API_KEY")
         self._session = ""
 
     def get(self):
         if self._session:
             return self._session
-        key = os.environ.get("LUNA_OLLAMA_API_KEY") or os.environ.get("OLLAMA_API_KEY")
+        key = next((os.environ[name] for name in self.env_names if os.environ.get(name)), "")
         if key:
             return key
         if self.path.exists():
@@ -59,7 +62,7 @@ class Credentials:
     def status(self):
         if self._session:
             return "현재 세션에 등록됨"
-        if os.environ.get("LUNA_OLLAMA_API_KEY") or os.environ.get("OLLAMA_API_KEY"):
+        if any(os.environ.get(name) for name in self.env_names):
             return "환경 변수에 등록됨"
         return "이 Windows 사용자에 암호화 저장됨" if self.path.exists() else "등록된 키 없음"
 

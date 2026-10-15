@@ -29,12 +29,15 @@ def load_settings(folder):
                 result["voice_speed"] = check_voice_speed(data["voice_speed"])
             except ValueError:
                 pass
-        if data.get("ai_mode") in ("off", "local", "cloud"):
+        if data.get("ai_mode") in ("off", "local", "cloud", "openai"):
             result["ai_mode"] = data["ai_mode"]
         if isinstance(data.get("ollama_model"), str):
             result["ollama_model"] = data["ollama_model"][:120]
         if isinstance(data.get("vision_model"), str):
             result["vision_model"] = data["vision_model"][:120]
+        for key in ("openai_model", "openai_vision_model"):
+            if isinstance(data.get(key), str):
+                result[key] = data[key][:120]
         if data.get("search_provider") in ("google", "naver"):
             result["search_provider"] = data["search_provider"]
         if data.get("search_kind") in ("web", "news", "video"):
@@ -53,7 +56,7 @@ def load_settings(folder):
 def save_settings(folder, voice, speak, *, ai_mode=None, ollama_model=None, remember_chat=None,
                   history_turns=None, volume=None, apply_volume_on_start=None, windows_control=None,
                   vision_model=None, search_provider=None, search_kind=None, voice_speed=None,
-                  wake_enabled=None, wake_during_speech=None):
+                  wake_enabled=None, wake_during_speech=None, openai_model=None, openai_vision_model=None):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     temporary = folder / f"settings-{uuid.uuid4().hex}.tmp"
@@ -63,13 +66,16 @@ def save_settings(folder, voice, speak, *, ai_mode=None, ollama_model=None, reme
         if voice_speed is not None:
             data["voice_speed"] = check_voice_speed(voice_speed)
         if ai_mode is not None:
-            if ai_mode not in {"off", "local", "cloud"}:
+            if ai_mode not in {"off", "local", "cloud", "openai"}:
                 raise ValueError("Invalid AI mode")
             data["ai_mode"] = ai_mode
         if ollama_model is not None:
             data["ollama_model"] = ollama_model
         if vision_model is not None:
             data["vision_model"] = vision_model
+        for key, value in (("openai_model", openai_model), ("openai_vision_model", openai_vision_model)):
+            if value is not None:
+                data[key] = value
         for key, value, allowed in (("search_provider", search_provider, {"google", "naver"}), ("search_kind", search_kind, {"web", "news", "video"})):
             if value is not None:
                 if value not in allowed:
@@ -90,3 +96,15 @@ def save_settings(folder, voice, speak, *, ai_mode=None, ollama_model=None, reme
         temporary.replace(folder / "settings.json")
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def model_settings(mode):
+    """Keep each provider's model preferences separate."""
+    if mode == "openai":
+        return "openai_model", "openai_vision_model", "gpt-4.1-mini"
+    return "ollama_model", "vision_model", "gpt-oss:120b" if mode == "cloud" else "qwen3:4b"
+
+
+def selected_model(options):
+    key, _, default = model_settings(options.get("ai_mode", "off"))
+    return options.get(key) or default

@@ -14,6 +14,7 @@ from unittest.mock import ANY, MagicMock, patch
 from assistant.app import LunaApp
 from assistant.attachments import Attachment
 from tests.program_fixtures import register_fixture_programs
+from tests.test_openai import reply, respond, tool_call
 from assistant.core import UserError
 from assistant.programs import Programs
 from assistant.service import AssistantService
@@ -665,6 +666,96 @@ class NativeUITests(unittest.TestCase):
         self.assertNotIn("unit-test-placeholder", (Path(self.temp.name) / "settings.json").read_text())
         self.assertEqual(load_settings(self.temp.name)["ai_mode"], "cloud")
         dialog.close()
+
+    def test_openai_settings_keep_keys_and_models_separate_and_restore(self):
+        self.app.service.credentials.set("ollama-test-placeholder", False)
+        self.app.open_config()
+        dialog = self.app.config_dialog
+        dialog.mode.set("Ollama 로컬 · API 키 불필요")
+        dialog.model.set("qwen3:8b")
+        dialog.vision_model.set("gemma3:4b")
+        self.assertTrue(dialog.save())
+        dialog.key.set("unsaved-ollama-placeholder")
+        dialog.mode.set("ChatGPT · OpenAI API 키 필요")
+        self.assertEqual(dialog.key.get(), "")
+        self.assertEqual(dialog.model.get(), "gpt-4.1-mini")
+        self.assertEqual(dialog.vision_model.get(), "")
+        self.assertIn("OpenAI", dialog.key_label.get())
+        self.assertEqual(str(dialog.key_entry.cget("show")), "●")
+        dialog.key.set("openai-test-placeholder")
+        dialog.persist.set(False)
+        dialog.model.set("gpt-4.1")
+        dialog.vision_model.set("gpt-4.1-mini")
+        self.assertTrue(dialog.save())
+        self.assertIn("ChatGPT", self.app.mode_var.get())
+        self.assertEqual(self.app.service.openai_credentials.get(), "openai-test-placeholder")
+        self.assertEqual(self.app.service.credentials.get(), "ollama-test-placeholder")
+        self.assertEqual(dialog.key.get(), "")
+        raw = (Path(self.temp.name) / "settings.json").read_text()
+        self.assertNotIn("placeholder", raw)
+        self.assertEqual(load_settings(self.temp.name)["ollama_model"], "qwen3:8b")
+        dialog.mode.set("Ollama 로컬 · API 키 불필요")
+        self.assertEqual(dialog.model.get(), "qwen3:8b")
+        self.assertEqual(dialog.vision_model.get(), "gemma3:4b")
+        dialog.mode.set("ChatGPT · OpenAI API 키 필요")
+        self.assertEqual(dialog.model.get(), "gpt-4.1")
+        dialog.close()
+        self.app.close()
+        self.root = tk.Tk()
+        self.app = LunaApp(self.root, self.temp.name, voice=self.voice, load_voices=False)
+        self.app.open_config()
+        restored = self.app.config_dialog
+        self.assertEqual(restored.mode.get(), "ChatGPT · OpenAI API 키 필요")
+        self.assertEqual(restored.model.get(), "gpt-4.1")
+        self.assertEqual(restored.vision_model.get(), "gpt-4.1-mini")
+        self.assertEqual(restored.key.get(), "")
+        restored.close()
+
+    def test_openai_connection_test_uses_selected_client_without_executing_tools(self):
+        self.app.open_config()
+        dialog = self.app.config_dialog
+        dialog.mode.set("ChatGPT · OpenAI API 키 필요")
+        dialog.key.set("openai-test-placeholder")
+        dialog.persist.set(False)
+        with patch("urllib.request.urlopen") as network, patch("assistant.desktop.volume") as volume:
+            respond(network, reply(None, [tool_call("set_volume", mode="mute")]))
+            dialog.test_connection()
+            self.wait_for(lambda: "OpenAI 연결 성공" in dialog.feedback.get())
+            request = network.call_args.args[0]
+            self.assertEqual(request.full_url, "https://api.openai.com/v1/chat/completions")
+            self.assertEqual(request.get_header("Authorization"), "Bearer openai-test-placeholder")
+            volume.assert_not_called()
+            self.assertEqual(self.app.service._proposals, {})
+        dialog.close()
+
+    def test_deleting_openai_key_in_settings_preserves_ollama_key(self):
+        self.app.service.credentials.set("ollama-test-placeholder", False)
+        self.app.service.openai_credentials.set("openai-test-placeholder", False)
+        self.app.open_config()
+        dialog = self.app.config_dialog
+        dialog.mode.set("ChatGPT · OpenAI API 키 필요")
+        dialog.key.set("unsaved-openai-placeholder")
+        with patch.dict(os.environ, {"LUNA_OPENAI_API_KEY": "", "OPENAI_API_KEY": ""}):
+            dialog.delete_key()
+            self.assertEqual(self.app.service.openai_credentials.get(), "")
+        self.assertEqual(self.app.service.credentials.get(), "ollama-test-placeholder")
+        self.assertEqual(dialog.key.get(), "")
+        dialog.close()
+
+    def test_openai_voice_actions_use_existing_auto_execution_and_female_voice(self):
+        self.app.recognizer = lambda: "메모장 켜고 볼륨을 25퍼센트로 설정해 줘"
+        self.app.service.openai_credentials.set("openai-test-placeholder", False)
+        save_settings(self.temp.name, "local:F2", True, ai_mode="openai", voice_speed=1.2)
+        self.app.apply_settings()
+        calls = [tool_call("launch_program", app_id="notepad"), tool_call("set_volume", mode="set", value=25)]
+        with patch("urllib.request.urlopen") as network, patch("assistant.programs.Programs.launch", return_value="메모장 실행 완료") as launch, patch("assistant.desktop.volume", return_value="볼륨 25퍼센트") as volume, patch.object(self.app, "confirm_actions", side_effect=AssertionError("no extra confirmation")):
+            respond(network, reply(None, calls))
+            self.app.listen()
+            self.wait_for(lambda: not self.app.listening and not self.app.command_busy and self.voice.speak.called)
+            launch.assert_called_once_with("notepad")
+            volume.assert_called_once_with("set", 25)
+            self.voice.speak.assert_called_once_with("메모장 실행 완료\n볼륨 25퍼센트", "local:F2", speed=1.2)
+            self.assertEqual(network.call_args.args[0].full_url, "https://api.openai.com/v1/chat/completions")
 
     def test_unconfigured_chat_opens_ollama_settings_without_api_request(self):
         with patch.dict(os.environ, {"LUNA_OPENAI_API_KEY": "unit-test-placeholder"}), patch("urllib.request.urlopen") as network:

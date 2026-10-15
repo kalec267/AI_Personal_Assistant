@@ -25,14 +25,15 @@ SETTING_PROPERTIES = {
     "volume": {"type": "integer", "minimum": 0, "maximum": 100}, "apply_volume_on_start": {"type": "boolean"},
     "search_provider": {"type": "string", "enum": ["google", "naver"]},
     "search_kind": {"type": "string", "enum": ["web", "news", "video"]},
-    "ai_mode": {"type": "string", "enum": ["off", "local", "cloud"]},
+    "ai_mode": {"type": "string", "enum": ["off", "local", "cloud", "openai"]},
     "ollama_model": {"type": "string"}, "vision_model": {"type": "string"}, "windows_control": {"type": "boolean"},
+    "openai_model": {"type": "string"}, "openai_vision_model": {"type": "string"},
 }
-SETTING_LABELS = dict(zip(SETTING_PROPERTIES, ("답변 읽기", "음성 속도", "목소리", "호출 감지", "답변 중 호출 감지", "대화 저장", "기억할 대화 수", "기본 볼륨", "시작 시 볼륨 적용", "검색 엔진", "검색 종류", "AI 연결", "대화 모델", "이미지 모델", "Windows 고급 제어")))
+SETTING_LABELS = dict(zip(SETTING_PROPERTIES, ("답변 읽기", "음성 속도", "목소리", "호출 감지", "답변 중 호출 감지", "대화 저장", "기억할 대화 수", "기본 볼륨", "시작 시 볼륨 적용", "검색 엔진", "검색 종류", "AI 연결", "Ollama 대화 모델", "Ollama 이미지 모델", "Windows 고급 제어", "OpenAI 대화 모델", "OpenAI 이미지 모델")))
 
 
 def describe_settings(values):
-    labels = {"local": "로컬", "cloud": "클라우드", "off": "끄기", "google": "구글", "naver": "네이버", "web": "전체", "news": "뉴스", "video": "동영상"}
+    labels = {"local": "로컬", "cloud": "Ollama 클라우드", "openai": "ChatGPT · OpenAI", "off": "끄기", "google": "구글", "naver": "네이버", "web": "전체", "news": "뉴스", "video": "동영상"}
     result = []
     for key, value in values.items():
         if type(value) is bool:
@@ -142,8 +143,8 @@ def settings_values(args):
                 values[key] = check_voice_speed(value)
             except ValueError as error:
                 raise UserError(str(error)) from None
-        if key in {"ollama_model", "vision_model"}:
-            if key == "vision_model" and value == "":
+        if key in {"ollama_model", "vision_model", "openai_model", "openai_vision_model"}:
+            if key in {"vision_model", "openai_vision_model"} and value == "":
                 continue
             if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:-]{0,119}", value):
                 raise UserError("모델 이름이 올바르지 않아요.")
@@ -302,7 +303,7 @@ def parse_app_command(text, options, view=None):
         r"(?:목소리|음성)(?:미리)?(?:들어보기|들려줘|테스트해줘)": ("control_app", {"action": "test_voice"}),
         r"로컬(?:목소리|음성)(?:모델)?설치" + suffix: ("control_app", {"action": "install_voice"}),
         r"호출어(?:모델)?설치" + suffix: ("control_app", {"action": "install_wake"}),
-        r"(?:AI|에이아이|올라마|Ollama)연결테스트" + suffix: ("control_app", {"action": "test_connection"}),
+        r"(?:AI|에이아이|올라마|Ollama|ChatGPT|챗지피티|챗GPT|OpenAI|오픈AI|오픈에이아이)연결테스트" + suffix: ("control_app", {"action": "test_connection"}),
         r"관리자권한으로(?:다시)?(?:실행|재실행)" + suffix: ("control_app", {"action": "restart_admin"}),
         r"(?:앱|루나)(?:을|를)?종료" + suffix: ("control_app", {"action": "close_app"}),
         r"설정(?:을|를)?저장" + suffix: ("control_app", {"action": "save_settings"}),
@@ -349,6 +350,8 @@ def parse_app_command(text, options, view=None):
     match = re.fullmatch(r"(로컬|클라우드)(?:모드)?(?:로|으로)(?:변경|설정|바꿔)" + suffix, key)
     if match:
         return call("change_settings", ai_mode="local" if match[1] == "로컬" else "cloud")
+    if re.fullmatch(r"(?:챗지피티|챗gpt|chatgpt|오픈ai|openai|오픈에이아이)(?:모드)?(?:로|으로)(?:변경|설정|바꿔)" + suffix, key, re.IGNORECASE):
+        return call("change_settings", ai_mode="openai")
     match = re.fullmatch(r"(?:기본|저장할)볼륨(?:을|를)?(\d+)(?:퍼센트|%)?(?:로|으로)?(?:저장|설정)" + suffix, key)
     if match:
         return call("change_settings", volume=int(match[1]))

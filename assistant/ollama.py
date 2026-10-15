@@ -38,22 +38,24 @@ def tools(catalog, *, allow_windows=False):
 
 
 class Ollama:
+    name = "Ollama"
+
     def __init__(self, credentials):
         self.credentials = credentials
 
     def request(self, mode, model, text, catalog, *, history=None, allow_windows=False, analysis=False, context="", images=None, app_context=None):
+        self._validate(mode, model)
+        payload = self._payload(model, text, catalog, history=history, allow_windows=allow_windows,
+                                analysis=analysis, context=context, images=images, app_context=app_context)
+        return self._complete(mode, payload, analysis=analysis, images=images)
+
+    def _validate(self, mode, model):
         if mode not in {"local", "cloud"}:
             raise UserError("Ollama 로컬 또는 클라우드를 선택하세요.")
         if not isinstance(model, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:-]{0,119}", model):
             raise UserError("올바른 Ollama 모델 이름을 입력해 주세요.")
-        headers = {"Content-Type": "application/json"}
-        endpoint = "http://127.0.0.1:11434/api/chat"
-        if mode == "cloud":
-            endpoint = "https://ollama.com/api/chat"
-            key = self.credentials.get()
-            if not key:
-                raise UserError("AI 설정에서 재발급한 Ollama API 키를 등록해 주세요.")
-            headers["Authorization"] = "Bearer " + key
+
+    def _payload(self, model, text, catalog, *, history, allow_windows, analysis, context, images, app_context):
         prompt = (
             "당신은 한국어 개인 비서 루나입니다. 명확한 PC 조작 요청만 제공된 도구로 제안하세요. "
             "아직 실행되지 않았으므로 완료했다고 말하지 마세요. 질문·부정·취소에는 조작을 제안하지 마세요. "
@@ -113,6 +115,30 @@ class Ollama:
             payload["options"]["num_ctx"] = 16384
         else:
             payload["tools"] = tools(catalog, allow_windows=allow_windows)
+        return payload
+
+    def _parse_message(self, message, *, analysis):
+        if not isinstance(message, dict):
+            raise UserError(f"{self.name} 응답 형식이 올바르지 않습니다.")
+        calls = message.get("tool_calls") or []
+        content = message.get("content") or ""
+        if not isinstance(calls, list) or len(calls) > 5 or not isinstance(content, str):
+            raise UserError(f"{self.name}가 올바르지 않은 동작을 제안했어요. 아무 동작도 실행하지 않았습니다.")
+        if analysis and calls:
+            raise UserError("첨부 분석 중에는 PC 동작을 실행하지 않습니다. 자료만 분석하도록 다시 요청하세요.")
+        if not calls and not content.strip():
+            raise UserError(f"{self.name} 답변이 비어 있어요. 다른 모델을 선택하거나 다시 시도해 주세요.")
+        return {"content": content[:6000], "calls": calls}
+
+    def _complete(self, mode, payload, *, analysis, images):
+        headers = {"Content-Type": "application/json"}
+        endpoint = "http://127.0.0.1:11434/api/chat"
+        if mode == "cloud":
+            endpoint = "https://ollama.com/api/chat"
+            key = self.credentials.get()
+            if not key:
+                raise UserError("AI 설정에서 재발급한 Ollama API 키를 등록해 주세요.")
+            headers["Authorization"] = "Bearer " + key
         request = urllib.request.Request(endpoint, data=json.dumps(payload).encode(), headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=90) as response:
@@ -122,15 +148,7 @@ class Ollama:
             message = result.get("message")
             if not isinstance(message, dict) or result.get("error"):
                 raise UserError("Ollama 응답 형식이 올바르지 않아요. 도구 호출을 지원하는 모델을 선택하세요.")
-            calls = message.get("tool_calls") or []
-            content = message.get("content") or ""
-            if not isinstance(calls, list) or len(calls) > 5 or not isinstance(content, str):
-                raise UserError("Ollama가 올바르지 않은 동작을 제안했어요. 아무 동작도 실행하지 않았습니다.")
-            if analysis and calls:
-                raise UserError("첨부 분석 중에는 PC 동작을 실행하지 않습니다. 자료만 분석하도록 다시 요청하세요.")
-            if not calls and not content.strip():
-                raise UserError("Ollama 답변이 비어 있어요. 다른 모델을 선택하거나 다시 시도해 주세요.")
-            return {"content": content[:6000], "calls": calls}
+            return self._parse_message(message, analysis=analysis)
         except urllib.error.HTTPError as error:
             if error.code in (401, 403):
                 if mode == "cloud":

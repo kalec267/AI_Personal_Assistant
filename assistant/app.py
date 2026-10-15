@@ -107,7 +107,7 @@ class LunaApp:
         self.attachments = []
         self.analysis_progress = queue.Queue()
         self.attachment_note = tk.StringVar(value="첨부한 파일은 현재 대화에서만 유지됩니다.")
-        self.mode_var = tk.StringVar(value={"off": "기본 명령", "local": "Ollama 로컬", "cloud": "Ollama 클라우드"}.get(self.settings.get("ai_mode", "off"), "기본 명령") + " · 데스크톱")
+        self.mode_var = tk.StringVar(value={"off": "기본 명령", "local": "Ollama 로컬", "cloud": "Ollama 클라우드", "openai": "ChatGPT · OpenAI"}.get(self.settings.get("ai_mode", "off"), "기본 명령") + " · 데스크톱")
         self.command_var = tk.StringVar()
         self.day_var = tk.StringVar(value=dt.date.today().isoformat())
         self.status_var = tk.StringVar(value="준비됐어요. 무엇을 도와드릴까요?")
@@ -217,7 +217,7 @@ class LunaApp:
         self.mic_button.pack(side="left", padx=6)
         self.send_button = self.button(input_row, "보내기", self.submit, primary=True)
         self.send_button.pack(side="left")
-        note = self.label(left, "‘루나’ 감지는 로컬 · 호출 후 명령은 Google에 음성 전송\nOllama 클라우드 사용 시 첨부 내용·이미지도 전송됩니다.", size=8, color=MUTED)
+        note = self.label(left, "‘루나’ 감지는 로컬 · 호출 후 명령은 Google에 음성 전송\n클라우드 AI 사용 시 선택한 서비스로 첨부 내용·이미지도 전송됩니다.", size=8, color=MUTED)
         note.configure(wraplength=470)
         note.pack(anchor="w", pady=(9, 0))
         self.privacy_note = note
@@ -323,7 +323,7 @@ class LunaApp:
         self.speak_var.set(self.settings.get("speak", True))
         self.voice_var.set(self.settings.get("voice", ""))
         self.voice_speed = self.settings.get("voice_speed", 1.0)
-        self.mode_var.set({"off": "기본 명령", "local": "Ollama 로컬", "cloud": "Ollama 클라우드"}.get(self.settings.get("ai_mode", "off"), "기본 명령") + " · 데스크톱")
+        self.mode_var.set({"off": "기본 명령", "local": "Ollama 로컬", "cloud": "Ollama 클라우드", "openai": "ChatGPT · OpenAI"}.get(self.settings.get("ai_mode", "off"), "기본 명령") + " · 데스크톱")
         if not self.speak_var.get():
             self.stop_speech()
         if self.selected_voice():
