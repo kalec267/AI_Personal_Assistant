@@ -69,6 +69,35 @@ class OllamaTests(unittest.TestCase):
                 with self.assertRaises(UserError):
                     self.client.request("local", "qwen3:4b", "실행", [])
 
+    def test_auth_error_names_the_selected_provider_and_http_status(self):
+        for mode, expected in [("cloud", "Ollama 클라우드 인증 실패"), ("local", "Ollama 로컬 서버 접근 거부")]:
+            with self.subTest(mode=mode), patch("assistant.ollama.urllib.request.urlopen", side_effect=urllib.error.HTTPError("https://example.invalid", 403, "private upstream detail", {}, None)):
+                with self.assertRaises(UserError) as error:
+                    self.client.request(mode, "qwen3:4b", "안녕", [])
+                self.assertIn(expected, str(error.exception))
+                self.assertIn("HTTP 403", str(error.exception))
+                self.assertNotIn("private", str(error.exception))
+
+
+class ProviderRoutingTests(unittest.TestCase):
+    def test_ai_off_never_contacts_openai_even_with_legacy_key(self):
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"LUNA_OPENAI_API_KEY": "unit-test-placeholder"}), patch("urllib.request.urlopen") as network:
+            service = AssistantService(folder)
+            result = service.execute("안녕하세요")
+            self.assertTrue(result["open_settings"])
+            self.assertIn("Ollama", result["message"])
+            self.assertNotIn("LUNA_OPENAI_API_KEY", result["message"])
+            network.assert_not_called()
+
+    def test_selected_ollama_route_ignores_legacy_openai_key(self):
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"LUNA_OPENAI_API_KEY": "unit-test-placeholder"}), patch("urllib.request.urlopen") as network:
+            save_settings(folder, "", False, ai_mode="cloud", ollama_model="gpt-oss:120b")
+            service = AssistantService(folder)
+            with patch.object(service.ollama, "request", return_value={"content": "안녕하세요", "calls": []}) as ollama:
+                self.assertEqual(service.execute("안녕")["message"], "안녕하세요")
+                self.assertEqual(ollama.call_args.args[:2], ("cloud", "gpt-oss:120b"))
+            network.assert_not_called()
+
 
 class ProposalTests(unittest.TestCase):
     def setUp(self):

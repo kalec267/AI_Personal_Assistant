@@ -5,7 +5,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import conversation, desktop
+from . import desktop
 from .core import Calendar, parse_command
 from .core import UserError
 from .actions import validate_calls, perform
@@ -52,7 +52,11 @@ class AssistantService:
         elif action == "volume":
             message = desktop.volume(intent["mode"], intent.get("value", 0))
         else:
-            message = conversation.answer(text)
+            # AI off must not contact an unrelated provider because a legacy
+            # environment variable happens to exist on the user's machine.
+            return {"message": "현재는 기본 명령 모드예요. 자연어 대화와 명령을 사용하려면 "
+                    "‘AI · 프로그램 설정’에서 Ollama 로컬 또는 Ollama 클라우드를 선택하고 설정을 저장해 주세요. "
+                    "클라우드 키는 그 창의 ‘Ollama API 키’에 입력하세요.", "open_settings": True}
         return {"message": message}
 
     def _interpret(self, text, options):

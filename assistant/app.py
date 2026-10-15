@@ -330,6 +330,8 @@ class LunaApp:
         self.status_var.set("준비됐어요. 무엇을 도와드릴까요?")
         self.append_message("루나", result["message"])
         self.say(result["message"])
+        if result.get("open_settings"):
+            self.open_config()
         if result.get("draft"):
             self.open_event(result["draft"])
         if result.get("proposal"):

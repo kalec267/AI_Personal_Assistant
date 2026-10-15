@@ -246,6 +246,15 @@ class NativeUITests(unittest.TestCase):
         self.assertEqual(load_settings(self.temp.name)["ai_mode"], "cloud")
         dialog.close()
 
+    def test_unconfigured_chat_opens_ollama_settings_without_api_request(self):
+        with patch.dict(os.environ, {"LUNA_OPENAI_API_KEY": "unit-test-placeholder"}), patch("urllib.request.urlopen") as network:
+            self.app.submit("안녕하세요")
+            self.wait_for(lambda: self.app.config_dialog is not None)
+            self.assertIn("Ollama", self.app.chat.get("1.0", "end"))
+            self.assertEqual(self.app.config_dialog.mode.get(), "기본 명령 (AI 끔)")
+            network.assert_not_called()
+            self.app.config_dialog.close()
+
 
 if __name__ == "__main__":
     unittest.main()

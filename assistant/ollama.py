@@ -76,7 +76,10 @@ class Ollama:
             return {"content": content[:6000], "calls": calls}
         except urllib.error.HTTPError as error:
             if error.code in (401, 403):
-                raise UserError("Ollama 인증·접근 권한을 확인해 주세요.") from None
+                if mode == "cloud":
+                    raise UserError(f"Ollama 클라우드 인증 실패 (HTTP {error.code}). "
+                                    "‘AI · 프로그램 설정’의 ‘Ollama API 키’에 Ollama에서 발급한 키를 다시 등록하고 연결 테스트를 눌러 주세요.") from None
+                raise UserError(f"Ollama 로컬 서버 접근 거부 (HTTP {error.code}). 로컬 Ollama 실행 상태와 접근 정책을 확인해 주세요.") from None
             if error.code == 429:
                 raise UserError("Ollama 사용 한도에 도달했어요. 잠시 후 다시 시도하거나 로컬 모드를 사용하세요.") from None
             if error.code == 404:
