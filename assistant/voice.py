@@ -148,7 +148,8 @@ def recognize_once():
         with sr.Microphone() as source:
             recognizer.adjust_for_ambient_noise(source, duration=0.5)
             audio = recognizer.listen(source, timeout=5, phrase_time_limit=10)
-        # Capture is bounded; no background or always-on listener is started.
+        # Manual capture remains bounded; the optional local wake listener has
+        # separate microphone ownership and never sends ambient audio here.
         return recognizer.recognize_google(audio, language="ko-KR", endpoint="https://www.google.com/speech-api/v2/recognize")
     except sr.WaitTimeoutError:
         raise UserError("음성이 감지되지 않았어요. 마이크 버튼을 누르고 다시 말씀해 주세요.") from None

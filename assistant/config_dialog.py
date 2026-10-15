@@ -45,6 +45,8 @@ class ConfigDialog(tk.Toplevel):
         self.remember = tk.BooleanVar(value=options.get("remember_chat", False))
         self.history_turns = tk.IntVar(value=options.get("history_turns", 10))
         self.speak = tk.BooleanVar(value=app.speak_var.get())
+        self.wake_enabled = tk.BooleanVar(value=options.get("wake_enabled", True))
+        self.wake_during_speech = tk.BooleanVar(value=options.get("wake_during_speech", False))
         self.voice_speed = tk.DoubleVar(value=options.get("voice_speed", 1.0))
         self.speed_label = tk.StringVar(value=f"{self.voice_speed.get():.2f}배")
         self.voice_var = tk.StringVar(value=app.selected_voice())
@@ -132,6 +134,13 @@ class ConfigDialog(tk.Toplevel):
 
     def _build_sound(self, frame):
         self.heading(frame, "목소리와 사운드")
+        ttk.Checkbutton(frame, text="‘루나’라고 부르면 명령 듣기 · 앱 실행 중 자동 감지", variable=self.wake_enabled).pack(anchor="w", pady=5)
+        ttk.Checkbutton(frame, text="답변 재생 중에도 호출 감지 · 이어폰 사용 권장", variable=self.wake_during_speech).pack(anchor="w", pady=5)
+        ttk.Label(frame, text="호출 대기는 이 PC에서 오프라인으로 인식합니다.\n호출 후 명령 음성은 기존 Google 인식에 전송합니다.\n스피커의 루나 목소리를 호출로 오인하지 않도록 기본값은 답변 중 감지 일시 정지입니다.", wraplength=580).pack(anchor="w", pady=8)
+        self.install_wake_button = ttk.Button(frame, text="호출어 모델 설치 / 다시 시작", command=self.app.install_wake)
+        self.install_wake_button.pack(anchor="w")
+        ttk.Label(frame, textvariable=self.app.wake_note, wraplength=580).pack(anchor="w", pady=8)
+        ttk.Separator(frame).pack(fill="x", pady=10)
         ttk.Checkbutton(frame, text="답변을 음성으로 읽기", variable=self.speak).pack(anchor="w", pady=(0, 12))
         ttk.Label(frame, text="목소리 · local:F1~F5는 한국어 여성 음성").pack(anchor="w")
         self.voice_combo = ttk.Combobox(frame, textvariable=self.voice_var, state="readonly")
@@ -253,7 +262,7 @@ class ConfigDialog(tk.Toplevel):
             save_settings(self.app.data_dir, self.voice_var.get(), self.speak.get(), ai_mode=MODES[self.mode.get()],
                           ollama_model=model, remember_chat=self.remember.get(), history_turns=turns,
                           volume=volume, apply_volume_on_start=self.start_volume.get(), windows_control=self.windows_access.get(), vision_model=vision_model,
-                          voice_speed=speed)
+                          voice_speed=speed, wake_enabled=self.wake_enabled.get(), wake_during_speech=self.wake_during_speech.get())
             self.app.apply_settings()
             self.feedback.set("사용자 설정 저장 완료 · " + self.app.service.credentials.status())
             self.save_feedback.set("사용자 설정을 저장했어요. 재실행 후에도 유지됩니다.")
@@ -330,6 +339,7 @@ class ConfigDialog(tk.Toplevel):
         if self.voice_var.get() not in values and self.app.selected_voice() in values:
             self.voice_var.set(self.app.selected_voice())
         self.install_voice_button.configure(state="disabled" if self.app.installing_voice else "normal")
+        self.install_wake_button.configure(state="disabled" if self.app.installing_wake else "normal")
 
     def test_voice(self):
         self.app.say("안녕하세요. 당신의 개인 비서 루나예요.", force=True, name=self.voice_var.get(), speed=round(self.voice_speed.get(), 2))

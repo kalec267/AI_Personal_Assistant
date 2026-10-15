@@ -39,7 +39,7 @@ def load_settings(folder):
             result["search_provider"] = data["search_provider"]
         if data.get("search_kind") in ("web", "news", "video"):
             result["search_kind"] = data["search_kind"]
-        for key in ("remember_chat", "apply_volume_on_start", "windows_control"):
+        for key in ("remember_chat", "apply_volume_on_start", "windows_control", "wake_enabled", "wake_during_speech"):
             if isinstance(data.get(key), bool):
                 result[key] = data[key]
         for key, low, high in (("history_turns", 1, 20), ("volume", 0, 100)):
@@ -52,7 +52,8 @@ def load_settings(folder):
 
 def save_settings(folder, voice, speak, *, ai_mode=None, ollama_model=None, remember_chat=None,
                   history_turns=None, volume=None, apply_volume_on_start=None, windows_control=None,
-                  vision_model=None, search_provider=None, search_kind=None, voice_speed=None):
+                  vision_model=None, search_provider=None, search_kind=None, voice_speed=None,
+                  wake_enabled=None, wake_during_speech=None):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     temporary = folder / f"settings-{uuid.uuid4().hex}.tmp"
@@ -74,7 +75,8 @@ def save_settings(folder, voice, speak, *, ai_mode=None, ollama_model=None, reme
                 if value not in allowed:
                     raise ValueError("Invalid search preference")
                 data[key] = value
-        for key, value in (("remember_chat", remember_chat), ("apply_volume_on_start", apply_volume_on_start), ("windows_control", windows_control)):
+        for key, value in (("remember_chat", remember_chat), ("apply_volume_on_start", apply_volume_on_start), ("windows_control", windows_control),
+                           ("wake_enabled", wake_enabled), ("wake_during_speech", wake_during_speech)):
             if value is not None:
                 if type(value) is not bool:
                     raise ValueError("Invalid boolean preference")

@@ -4,14 +4,15 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files
 
 project = Path(SPECPATH)
 voice_datas, voice_binaries, voice_imports = collect_all("sherpa_onnx")
+wake_datas, wake_binaries, wake_imports = collect_all("vosk")
 analysis = Analysis(
     [str(project / "launch.py")],
     pathex=[str(project)],
-    binaries=voice_binaries,
+    binaries=voice_binaries + wake_binaries,
     datas=[(str(project / "assistant" / "volume.ps1"), "assistant"),
            (str(project / "assistant" / "speech.ps1"), "assistant"),
-           (str(project / "assistant" / "document.ps1"), "assistant")] + voice_datas + collect_data_files("docx") + collect_data_files("pptx"),
-    hiddenimports=["speech_recognition", "pyaudio", "numpy"] + voice_imports,
+           (str(project / "assistant" / "document.ps1"), "assistant")] + voice_datas + wake_datas + collect_data_files("docx") + collect_data_files("pptx"),
+    hiddenimports=["speech_recognition", "pyaudio", "numpy", "_cffi_backend"] + voice_imports + wake_imports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

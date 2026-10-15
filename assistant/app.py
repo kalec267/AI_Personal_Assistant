@@ -19,6 +19,7 @@ from .config_dialog import ConfigDialog
 from .local_voice import install_model, MODEL_NAME, MODEL_FILES
 from .settings import default_data_dir, load_settings, save_settings
 from .voice import VoiceRouter, preferred_voice, recognize_once
+from .wake_word import WakeListener, install_wake_model, model_ready, recognize_locked, transcribe_command
 from .theme import BG, PAPER, INK, MUTED, BLUE, LINE, SURFACE, TINT, apply_theme
 
 
@@ -89,6 +90,14 @@ class LunaApp:
         self.voice_command = False
         self.listening = False
         self.speech_generation = 0
+        self.speech_active = False
+        self.microphone_lock = threading.Lock()
+        self.wake = None
+        self.wake_listening = False
+        self.wake_pending = False
+        self.wake_job = 0
+        self.installing_wake = False
+        self.wake_note = tk.StringVar(value="호출어 감지 준비 중…")
         self.voice_items = []
         self.installing_voice = False
         self.last_dialog = None
@@ -126,6 +135,7 @@ class LunaApp:
         if self.settings.get("apply_volume_on_start", False) and os.name == "nt":
             self.run_task(functools.partial(desktop.volume, "set", self.settings.get("volume", 30)),
                           lambda message: self.status_var.set(message), self.show_error)
+        self.configure_wake()
 
     @staticmethod
     def label(parent, text, *, size=11, color=INK, bold=False):
@@ -170,6 +180,7 @@ class LunaApp:
         orb.pack(fill="x")
         orb.bind("<Configure>", self._draw_orb)
         tk.Label(left, textvariable=self.status_var, bg=PAPER, fg=MUTED, font=("Malgun Gothic", 9), wraplength=460).pack(pady=(0, 12))
+        tk.Label(left, textvariable=self.wake_note, bg=PAPER, fg=BLUE, font=("Malgun Gothic", 8), wraplength=460).pack(pady=(0, 6))
         transcript = tk.Frame(left, bg=PAPER, height=1)
         transcript.pack_propagate(False)
         transcript.pack(fill="both", expand=True)
@@ -206,7 +217,7 @@ class LunaApp:
         self.mic_button.pack(side="left", padx=6)
         self.send_button = self.button(input_row, "보내기", self.submit, primary=True)
         self.send_button.pack(side="left")
-        note = self.label(left, "음성 인식 후 바로 실행 · Google에 음성 전송\nOllama 클라우드 사용 시 첨부 내용·이미지도 전송됩니다.", size=8, color=MUTED)
+        note = self.label(left, "‘루나’ 감지는 로컬 · 호출 후 명령은 Google에 음성 전송\nOllama 클라우드 사용 시 첨부 내용·이미지도 전송됩니다.", size=8, color=MUTED)
         note.configure(wraplength=470)
         note.pack(anchor="w", pady=(9, 0))
         self.privacy_note = note
@@ -322,6 +333,7 @@ class LunaApp:
             self.attachments = []
             self.refresh_attachments()
             self.status_var.set("연결 방식 또는 모델이 바뀌어 새 대화를 시작했어요.")
+        self.configure_wake()
 
     def run_task(self, work, success, error=None):
         # Keep every Tk callback on the UI thread. Workers must hold no Tk objects,
@@ -364,6 +376,9 @@ class LunaApp:
                     self.show_error(UserError("화면을 갱신하지 못했어요. 앱을 다시 시작해 주세요."))
         except queue.Empty:
             pass
+        self.sync_wake_availability()
+        self.poll_wake()
+        self.sync_wake_availability()
         self._poll_id = self.root.after(60, self._poll)
 
     def show_error(self, error):
@@ -378,6 +393,7 @@ class LunaApp:
             return
         self.stop_speech()
         self.command_busy = True
+        self.sync_wake_availability()
         self.voice_command = from_voice
         self.command_var.set("")
         self.send_button.configure(state="disabled")
@@ -590,13 +606,125 @@ class LunaApp:
         if self.listening or self.command_busy:
             return
         self.listening = True
+        self.sync_wake_availability()
         self.stop_speech()
         self.mic_button.configure(state="disabled", text="듣는 중…")
         self.send_button.configure(state="disabled")
         self.status_var.set("주변 소음 확인 후 듣습니다. 잠시 뒤 말씀해 주세요. 최대 10초 동안 인식해요.")
-        self.run_task(self.recognizer, self._heard, self._listen_failed)
+        self.run_task(functools.partial(recognize_locked, self.recognizer, self.microphone_lock), self._heard, self._listen_failed)
+
+    def configure_wake(self):
+        if not self.settings.get("wake_enabled", True):
+            self.stop_wake()
+            self.wake_note.set("‘루나’ 호출 감지 꺼짐 · 마이크 버튼 사용 가능")
+        elif os.name != "nt":
+            self.wake_note.set("‘루나’ 호출 감지는 Windows에서 사용할 수 있어요.")
+        elif not model_ready(self.data_dir):
+            self.wake_note.set("‘루나’ 호출어 모델 설치 필요 · 설정 → 소리 · 음성")
+        elif self.wake is None:
+            self.wake_note.set("‘루나’ 호출어 모델을 불러오는 중…")
+            self.wake = WakeListener(self.data_dir, self.microphone_lock)
+            self.wake.start()
+            self.sync_wake_availability()
+
+    def stop_wake(self):
+        self.wake_job += 1
+        if self.wake is not None:
+            self.wake.close()
+            self.wake = None
+        if self.wake_listening or self.wake_pending:
+            self.wake_listening = False
+            self.wake_pending = False
+            self.listening = False
+            self.mic_button.configure(state="normal", text="마이크")
+            self.send_button.configure(state="normal")
+
+    def sync_wake_availability(self):
+        if self.wake is None or self.wake.failed:
+            return
+        dialog = self.config_dialog is not None and self.config_dialog.winfo_exists()
+        available = (not self.closed and not self.command_busy and (not self.listening or self.wake_listening)
+                     and (not self.speech_active or self.settings.get("wake_during_speech", False))
+                     and not dialog and self.root.grab_current() is None)
+        if not available and self.wake_listening:
+            self.wake_listening = False
+            self.listening = False
+            self.mic_button.configure(state="normal", text="마이크")
+            self.send_button.configure(state="disabled" if self.command_busy else "normal")
+        self.wake.set_available(available)
+        if not available:
+            self.wake_note.set("‘루나’ 호출 감지 일시 정지")
+
+    def poll_wake(self):
+        listener = self.wake
+        if listener is None:
+            return
+        while True:
+            try:
+                epoch, kind, value = listener.events.get_nowait()
+            except queue.Empty:
+                return
+            if self.closed or listener is not self.wake or epoch != listener.epoch:
+                continue
+            if kind == "error":
+                self.wake_note.set(value)
+                if self.wake_listening:
+                    self.wake_listening = False
+                    self._listen_failed(UserError(value))
+            elif kind == "ready":
+                self.wake_note.set("‘루나’라고 불러 주세요 · 마이크에서 호출어 감지 중")
+            elif kind == "wake":
+                if self.command_busy or self.listening:
+                    continue
+                self.wake_listening = True
+                self.listening = True
+                self.stop_speech()
+                self.mic_button.configure(state="disabled", text="듣는 중…")
+                self.send_button.configure(state="disabled")
+                self.status_var.set("듣고 있어요. 명령을 말씀해 주세요.")
+            elif kind == "audio" and self.wake_listening:
+                self.wake_listening = False
+                self.wake_pending = True
+                self.wake_job += 1
+                job = self.wake_job
+                listener.set_available(False)
+                self.status_var.set("말씀하신 명령을 인식하고 있어요…")
+
+                def heard(text, token=job):
+                    if not self.closed and token == self.wake_job:
+                        self._heard(text)
+
+                def failed(error, token=job):
+                    if not self.closed and token == self.wake_job:
+                        self._listen_failed(error)
+
+                self.run_task(functools.partial(transcribe_command, value), heard, failed)
+            elif kind == "timeout" and self.wake_listening:
+                self.wake_listening = False
+                listener.set_available(False)
+                self._listen_failed(UserError(value))
+
+    def install_wake(self):
+        if self.installing_wake:
+            return
+        self.installing_wake = True
+        self.wake_note.set("한국어 호출어 모델 다운로드 중… 설치 후 호출 감지는 오프라인입니다.")
+        self.refresh_voice_settings()
+        self.run_task(functools.partial(install_wake_model, self.data_dir), self._wake_installed, self._wake_install_failed)
+
+    def _wake_installed(self, _path):
+        self.installing_wake = False
+        self.stop_wake()
+        self.configure_wake()
+        self.refresh_voice_settings()
+
+    def _wake_install_failed(self, error):
+        self.installing_wake = False
+        self.wake_note.set(str(error))
+        self.refresh_voice_settings()
 
     def _heard(self, text):
+        self.wake_pending = False
         self.listening = False
         self.mic_button.configure(state="normal", text="마이크")
         self.send_button.configure(state="normal")
@@ -606,6 +734,7 @@ class LunaApp:
         self.submit(text.strip(), from_voice=True)
 
     def _listen_failed(self, error):
+        self.wake_pending = False
         self.listening = False
         self.mic_button.configure(state="normal", text="마이크")
         self.send_button.configure(state="normal")
@@ -675,6 +804,7 @@ class LunaApp:
 
     def stop_speech(self):
         self.speech_generation += 1
+        self.speech_active = False
         self.voice.stop()
 
     def say(self, text, force=False, name=None, speed=None):
@@ -690,9 +820,16 @@ class LunaApp:
         speed = self.voice_speed if speed is None else speed
         self.speech_generation += 1
         generation = self.speech_generation
+        self.speech_active = True
+        self.sync_wake_availability()
+
+        def finished(_value):
+            if generation == self.speech_generation:
+                self.speech_active = False
 
         def failed(error):
             if not self.closed and generation == self.speech_generation:
+                self.speech_active = False
                 self.voice_note.set(str(error))
 
         # Reserve on the UI thread. A worker that starts late must keep its old
@@ -702,12 +839,13 @@ class LunaApp:
         except (UserError, OSError, RuntimeError) as error:
             failed(error)
             return
-        self.run_task(work, lambda _value: None, failed)
+        self.run_task(work, finished, failed)
 
     def close(self):
         if self.closed:
             return
         self.closed = True
+        self.stop_wake()
         self.voice.close()
         self.callbacks.clear()
         self.last_dialog = None

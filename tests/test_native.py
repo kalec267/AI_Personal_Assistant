@@ -16,6 +16,7 @@ from assistant.core import UserError
 from assistant.service import AssistantService
 from assistant.settings import load_settings, save_settings
 from assistant.voice import WindowsVoice, VoiceRouter, preferred_voice, recognize_once
+from assistant.wake_word import WakeListener
 
 
 class ServiceTests(unittest.TestCase):
@@ -177,6 +178,103 @@ class NativeUITests(unittest.TestCase):
             self.app.submit("새 명령")
             self.wait_for(lambda: "새 답변" in calls)
         self.assertEqual(calls, ["stop", "execute", "새 답변"])
+
+    def attach_wake_listener(self):
+        listener = WakeListener(self.temp.name, self.app.microphone_lock)
+        listener.set_available(True)
+        self.app.wake = listener
+        return listener
+
+    def test_wake_invocation_transcribes_and_executes_without_button_or_enter(self):
+        listener = self.attach_wake_listener()
+        listener.events.put((listener.epoch, "wake", None))
+        listener.events.put((listener.epoch, "audio", (b"command", 16000, True)))
+        with patch("assistant.app.transcribe_command", return_value="메모장 실행") as recognize, patch("assistant.app.desktop.launch", return_value="메모장 실행 완료") as launch:
+            self.app.poll_wake()
+            self.wait_for(lambda: launch.called and not self.app.command_busy and not self.app.listening)
+            recognize.assert_called_once_with((b"command", 16000, True))
+            launch.assert_called_once_with("notepad")
+            self.voice.stop.assert_called()
+            self.assertIn("메모장 실행 완료", self.app.chat.get("1.0", "end"))
+            self.assertTrue(listener.available.is_set())
+
+    def test_disabling_wake_during_capture_restores_buttons_and_discards_events(self):
+        listener = self.attach_wake_listener()
+        listener.events.put((listener.epoch, "wake", None))
+        self.app.poll_wake()
+        self.assertTrue(self.app.listening)
+        self.app.settings["wake_enabled"] = False
+        self.app.configure_wake()
+        listener.events.put((listener.epoch, "audio", (b"stale", 16000, True)))
+        with patch("assistant.app.transcribe_command") as recognize:
+            self.app.poll_wake()
+            recognize.assert_not_called()
+        self.assertIsNone(self.app.wake)
+        self.assertTrue(listener.stopped.is_set())
+        self.assertFalse(self.app.listening)
+        self.assertEqual(str(self.app.mic_button["state"]), "normal")
+
+    def test_disabled_wake_discards_transcription_that_finishes_late(self):
+        listener = self.attach_wake_listener()
+        listener.events.put((listener.epoch, "wake", None))
+        listener.events.put((listener.epoch, "audio", (b"stale", 16000, True)))
+        started, release = threading.Event(), threading.Event()
+
+        def recognize(_payload):
+            started.set()
+            release.wait(3)
+            return "메모장 실행"
+
+        with patch("assistant.app.transcribe_command", side_effect=recognize), patch("assistant.app.desktop.launch") as launch:
+            self.app.poll_wake()
+            try:
+                self.assertTrue(started.wait(3))
+                self.app.stop_wake()
+            finally:
+                release.set()
+            self.wait_for(lambda: not self.app.callbacks)
+            launch.assert_not_called()
+            self.assertFalse(self.app.listening)
+
+    def test_wake_pauses_during_speech_and_manual_capture_but_option_allows_interrupt(self):
+        listener = self.attach_wake_listener()
+        self.app.speech_active = True
+        self.app.sync_wake_availability()
+        self.assertFalse(listener.available.is_set())
+        self.app.settings["wake_during_speech"] = True
+        self.app.sync_wake_availability()
+        self.assertTrue(listener.available.is_set())
+        self.app.listening = True
+        self.app.sync_wake_availability()
+        self.assertFalse(listener.available.is_set())
+        self.app.listening = False
+        self.app.speech_active = False
+        self.app.sync_wake_availability()
+        self.assertTrue(listener.available.is_set())
+
+    def test_old_wake_event_cannot_interrupt_a_new_typed_command(self):
+        listener = self.attach_wake_listener()
+        epoch = listener.epoch
+        self.app.command_busy = True
+        self.app.sync_wake_availability()
+        listener.events.put((epoch, "wake", None))
+        self.app.poll_wake()
+        self.assertFalse(self.app.wake_listening)
+        self.assertFalse(self.app.listening)
+
+    def test_wake_options_restore_in_settings_after_restart(self):
+        self.app.open_config()
+        dialog = self.app.config_dialog
+        dialog.wake_enabled.set(False)
+        dialog.wake_during_speech.set(True)
+        self.assertTrue(dialog.save())
+        self.assertFalse(load_settings(self.temp.name)["wake_enabled"])
+        self.assertTrue(load_settings(self.temp.name)["wake_during_speech"])
+        dialog.close()
+        self.app.open_config()
+        self.assertFalse(self.app.config_dialog.wake_enabled.get())
+        self.assertTrue(self.app.config_dialog.wake_during_speech.get())
+        self.app.config_dialog.close()
 
     def test_microphone_stops_speech_before_capturing_audio(self):
         calls = []
