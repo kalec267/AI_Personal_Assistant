@@ -4,7 +4,7 @@ import ipaddress
 import urllib.parse
 import webbrowser
 
-from . import desktop
+from . import desktop, windows_control
 from .core import UserError
 
 
@@ -29,7 +29,7 @@ def website_url(value):
     return value
 
 
-def validate_calls(calls, programs):
+def validate_calls(calls, programs, *, allow_windows=False):
     if not isinstance(calls, list) or not 1 <= len(calls) <= 5:
         raise UserError("동작은 한 번에 1~5개까지만 제안할 수 있어요.")
     catalog = {app["id"]: app["name"] for app in programs.catalog()}
@@ -42,9 +42,10 @@ def validate_calls(calls, programs):
         if not isinstance(args, dict):
             raise UserError("AI 동작 인자가 올바르지 않아요.")
         allowed = {"launch_program": {"app_id"}, "set_volume": {"mode", "value"}, "open_website": {"url"},
-                   "media_control": {"command"}, "create_event": {"title", "start", "end"}, "list_events": {"day"}}
+                   "media_control": {"command"}, "create_event": {"title", "start", "end"}, "list_events": {"day"},
+                   "run_windows_command": {"command", "description"}}
         if not isinstance(name, str) or name not in allowed or args.keys() - allowed[name]:
-            raise UserError("지원하지 않는 동작입니다. 셸 명령이나 임의 인자는 실행하지 않아요.")
+            raise UserError("지원하지 않는 동작이나 인자가 포함되어 실행하지 않았어요.")
         if name == "launch_program":
             identifier = args.get("app_id")
             if not isinstance(identifier, str) or identifier not in catalog:
@@ -76,6 +77,14 @@ def validate_calls(calls, programs):
             except ValueError:
                 raise UserError("AI 일정 날짜·시간이 올바르지 않아요. 구체적인 날짜와 시간을 다시 알려 주세요.") from None
             summary = f"일정 초안: {args['title']} · {args['start']} — {args['end']}"
+        elif name == "run_windows_command":
+            if not allow_windows:
+                raise UserError("Windows 고급 제어가 꺼져 있어요. 설정 → Windows 제어에서 켜고 저장하세요.")
+            command = windows_control.validate_command(args.get("command"))
+            description = args.get("description")
+            if not isinstance(description, str) or not 1 <= len(description.strip()) <= 300 or any(ord(char) < 32 for char in description):
+                raise UserError("Windows 명령의 작업 설명이 올바르지 않습니다.")
+            summary = f"Windows 작업: {description}\nPowerShell 명령 전체:\n{command}"
         else:
             day = args.get("day")
             if day is not None:
@@ -90,7 +99,7 @@ def validate_calls(calls, programs):
     return actions
 
 
-def perform(action, programs):
+def perform(action, programs, *, allow_windows=False):
     name, args = action["name"], action["args"]
     if name == "launch_program":
         return programs.launch(args["app_id"])
@@ -103,4 +112,8 @@ def perform(action, programs):
         return "웹사이트 열기를 요청했어요."
     if name == "media_control":
         return desktop.media(args["command"])
+    if name == "run_windows_command":
+        if not allow_windows:
+            raise UserError("Windows 고급 제어가 꺼져 있어 실행하지 않았어요.")
+        return windows_control.run_command(args["command"])
     raise UserError("지원하지 않는 실행 동작입니다.")

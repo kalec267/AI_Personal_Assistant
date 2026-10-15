@@ -5,7 +5,7 @@ import re
 import tkinter as tk
 from tkinter import filedialog, ttk
 
-from . import desktop
+from . import desktop, windows_control
 from .core import UserError
 from .settings import load_settings, save_settings
 
@@ -46,6 +46,8 @@ class ConfigDialog(tk.Toplevel):
         self.volume = tk.DoubleVar(value=options.get("volume", 30))
         self.volume_label = tk.StringVar(value=f"{round(self.volume.get())}%")
         self.start_volume = tk.BooleanVar(value=options.get("apply_volume_on_start", False))
+        self.windows_access = tk.BooleanVar(value=options.get("windows_control", False))
+        self.windows_feedback = tk.StringVar()
         self.feedback = tk.StringVar(value=app.service.credentials.status())
         self.save_feedback = tk.StringVar(value="변경 후 ‘설정 저장’을 눌러 적용하세요.")
         self.sound_feedback = tk.StringVar()
@@ -64,12 +66,13 @@ class ConfigDialog(tk.Toplevel):
         ttk.Label(footer, textvariable=self.save_feedback, wraplength=640).pack(anchor="w", pady=(7, 0))
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True, padx=18, pady=(18, 0))
-        pages = [SettingsPage(self.notebook) for _ in range(3)]
-        for page, name in zip(pages, ("AI · 대화", "프로그램", "소리 · 음성")):
+        pages = [SettingsPage(self.notebook) for _ in range(4)]
+        for page, name in zip(pages, ("AI · 대화", "프로그램", "소리 · 음성", "Windows 제어")):
             self.notebook.add(page, text=name)
         self._build_ai(pages[0].content)
         self._build_programs(pages[1].content)
         self._build_sound(pages[2].content)
+        self._build_windows(pages[3].content)
         self.refresh_programs()
         self.refresh_voices()
         self.protocol("WM_DELETE_WINDOW", self.close)
@@ -156,6 +159,64 @@ class ConfigDialog(tk.Toplevel):
         if self.model.get() in {"qwen3:4b", "gpt-oss:120b", ""}:
             self.model.set("gpt-oss:120b" if MODES[self.mode.get()] == "cloud" else "qwen3:4b")
 
+    def _build_windows(self, frame):
+        self.heading(frame, "Windows 조작 권한")
+        admin = windows_control.is_admin()
+        state = "관리자 권한" if admin else "일반 사용자 권한"
+        if os.name != "nt":
+            state = "Windows PC에서만 실행 가능"
+        ttk.Label(frame, text="현재 실행 권한: " + state).pack(anchor="w", pady=(0, 15))
+        ttk.Checkbutton(frame, text="Windows 고급 제어 허용 (PowerShell 명령)", variable=self.windows_access).pack(anchor="w", pady=8)
+        ttk.Label(frame, text="켜고 ‘설정 저장’을 누르면 AI가 Windows 명령을 제안할 수 있습니다.\n"
+                  "파일·폴더 생성/이동/삭제, 프로그램 실행·프로세스 종료, 서비스·레지스트리·시스템 설정 등을 현재 계정의 권한 안에서 제어합니다.\n"
+                  "매번 실행 전 실제 명령 전체와 작업 설명을 확인합니다. 파일 삭제나 시스템 변경은 되돌리지 못할 수 있습니다.",
+                  wraplength=580, justify="left").pack(anchor="w", pady=10)
+        ttk.Label(frame, text="명령 실행 결과는 최근 대화에 포함됩니다. 클라우드 모드에서는 후속 질문과 함께 결과도 전송되므로 비밀 정보 조회를 요청하지 마세요.",
+                  wraplength=580, justify="left").pack(anchor="w", pady=(0, 12))
+        ttk.Separator(frame).pack(fill="x", pady=10)
+        ttk.Label(frame, text="관리자 권한이 필요한 작업").pack(anchor="w", pady=(5, 8))
+        self.admin_button = ttk.Button(frame, text="설정 저장 후 관리자 권한으로 다시 실행", command=self.restart_admin)
+        self.admin_button.pack(anchor="w", pady=5)
+        if os.name != "nt" or admin:
+            self.admin_button.configure(state="disabled")
+        ttk.Label(frame, text="Windows UAC 창에서 직접 승인해야 합니다. 승인되면 현재 앱을 닫고 관리자 앱으로 전환합니다.\n"
+                  "세션에만 입력한 API 키와 저장하지 않은 대화는 재입력이 필요할 수 있습니다.\n"
+                  "관리자 실행은 이번 실행에만 적용됩니다. Windows 보안 정책·보호된 프로세스 등 운영체제의 제한은 유지됩니다.",
+                  wraplength=580, justify="left").pack(anchor="w", pady=10)
+        ttk.Label(frame, textvariable=self.windows_feedback, wraplength=580).pack(anchor="w", pady=10)
+
+    def restart_admin(self):
+        if self.app.command_busy or self.app.listening:
+            self.windows_feedback.set("진행 중인 요청이나 음성 인식이 끝난 뒤 다시 실행하세요.")
+            return
+        if self.app.installing_voice:
+            self.windows_feedback.set("로컬 음성 설치가 끝난 뒤 다시 실행하세요.")
+            return
+        if self.app.last_dialog is not None and self.app.last_dialog.winfo_exists():
+            self.windows_feedback.set("일정 초안 창을 저장하거나 닫은 뒤 다시 실행하세요.")
+            return
+        if not self.save():
+            return
+        self.app.command_busy = True
+        self.app.send_button.configure(state="disabled")
+        self.app.mic_button.configure(state="disabled")
+        self.app.voice.stop()
+        self.admin_button.configure(state="disabled")
+        self.windows_feedback.set("Windows UAC 승인을 기다리고 있어요…")
+        self.app.run_task(functools.partial(windows_control.restart_as_admin, self.app.data_dir),
+                          self.admin_started, self.admin_failed)
+
+    def admin_started(self, _result):
+        self.app.close()
+
+    def admin_failed(self, error):
+        self.app.command_busy = False
+        self.app.send_button.configure(state="normal")
+        self.app.mic_button.configure(state="normal")
+        if self.winfo_exists():
+            self.admin_button.configure(state="normal")
+            self.windows_feedback.set(str(error))
+
     def save(self):
         try:
             model = self.model.get().strip()
@@ -169,7 +230,7 @@ class ConfigDialog(tk.Toplevel):
                 self.key.set("")
             save_settings(self.app.data_dir, self.voice_var.get(), self.speak.get(), ai_mode=MODES[self.mode.get()],
                           ollama_model=model, remember_chat=self.remember.get(), history_turns=turns,
-                          volume=volume, apply_volume_on_start=self.start_volume.get())
+                          volume=volume, apply_volume_on_start=self.start_volume.get(), windows_control=self.windows_access.get())
             self.app.apply_settings()
             self.feedback.set("사용자 설정 저장 완료 · " + self.app.service.credentials.status())
             self.save_feedback.set("사용자 설정을 저장했어요. 재실행 후에도 유지됩니다.")

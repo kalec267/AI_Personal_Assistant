@@ -262,7 +262,7 @@ class NativeUITests(unittest.TestCase):
         self.app._voices_loaded([{"name": "local:F4", "culture": "ko-KR", "gender": "Female"}])
         self.app.open_config()
         dialog = self.app.config_dialog
-        self.assertEqual([dialog.notebook.tab(tab, "text") for tab in dialog.notebook.tabs()], ["AI · 대화", "프로그램", "소리 · 음성"])
+        self.assertEqual([dialog.notebook.tab(tab, "text") for tab in dialog.notebook.tabs()], ["AI · 대화", "프로그램", "소리 · 음성", "Windows 제어"])
         dialog.mode.set("Ollama 로컬 · API 키 불필요")
         dialog.model.set("qwen3:4b")
         dialog.voice_var.set("local:F4")
@@ -271,6 +271,7 @@ class NativeUITests(unittest.TestCase):
         dialog.start_volume.set(True)
         dialog.remember.set(True)
         dialog.history_turns.set(4)
+        dialog.windows_access.set(True)
         with patch("assistant.app.desktop.volume") as volume:
             self.assertTrue(dialog.save())
             volume.assert_not_called()
@@ -291,7 +292,50 @@ class NativeUITests(unittest.TestCase):
         self.assertTrue(restored.start_volume.get())
         self.assertTrue(restored.remember.get())
         self.assertEqual(restored.history_turns.get(), 4)
+        self.assertTrue(restored.windows_access.get())
         restored.close()
+
+    def test_windows_command_review_shows_full_script_and_requires_click(self):
+        from assistant.command_dialog import CommandDialog
+        summary = "문서 폴더 만들기\n" + "Write-Output '한글 테스트'\n" * 100
+        dialog = CommandDialog(self.root, summary)
+        self.root.update()
+        self.assertEqual(dialog.command_text.get("1.0", "end-1c"), summary)
+        self.assertFalse(dialog.approved)
+        dialog.destroy()
+        self.assertFalse(dialog.approved)
+        dialog = CommandDialog(self.root, summary)
+        dialog.approve()
+        self.assertTrue(dialog.approved)
+
+    def test_admin_restart_cancel_keeps_app_running_and_restores_controls(self):
+        self.app.open_config()
+        dialog = self.app.config_dialog
+        with patch("assistant.config_dialog.windows_control.restart_as_admin", side_effect=UserError("UAC 승인 취소")):
+            dialog.restart_admin()
+            self.wait_for(lambda: "취소" in dialog.windows_feedback.get())
+        self.assertFalse(self.app.closed)
+        self.assertFalse(self.app.command_busy)
+        self.assertEqual(str(self.app.send_button.cget("state")), "normal")
+        self.assertEqual(str(self.app.mic_button.cget("state")), "normal")
+        dialog.close()
+
+    def test_windows_command_runs_only_after_actual_native_review_approval(self):
+        from assistant.command_dialog import CommandDialog
+        save_settings(self.temp.name, "", False, ai_mode="local", ollama_model="qwen3:4b", windows_control=True)
+        calls = [{"function": {"name": "run_windows_command", "arguments": {"command": "Write-Output '한글'", "description": "한글 출력"}}}]
+        for approve in (False, True):
+            def show(parent, summary):
+                dialog = CommandDialog(parent, summary)
+                self.root.after_idle(dialog.approve if approve else dialog.destroy)
+                return dialog
+            with self.subTest(approve=approve), patch("assistant.command_dialog.CommandDialog", side_effect=show), patch.object(self.app.service.ollama, "request", return_value={"content": "", "calls": calls}), patch("assistant.windows_control.run_command", return_value="PowerShell 실행 완료\n한글") as run:
+                self.app.submit("한글 출력해 줘")
+                self.wait_for(lambda: not self.app.command_busy)
+                if approve:
+                    run.assert_called_once_with("Write-Output '한글'")
+                else:
+                    run.assert_not_called()
 
     def test_volume_in_settings_does_not_need_ai_connection(self):
         self.app.open_config()

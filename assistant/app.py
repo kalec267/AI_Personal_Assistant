@@ -348,7 +348,7 @@ class LunaApp:
             self.open_event(result["draft"], result.get("history_turn"))
         if result.get("proposal"):
             proposal = result["proposal"]
-            if messagebox.askyesno("AI 동작 확인", proposal["summary"] + "\n\n이 순서로 실행할까요?", parent=self.root):
+            if self.confirm_actions(proposal):
                 self.command_busy = True
                 self.send_button.configure(state="disabled")
                 self.status_var.set("확인한 동작을 실행하고 있어요…")
@@ -356,6 +356,14 @@ class LunaApp:
             else:
                 self.service.discard_proposal(proposal["id"])
                 self.append_message("루나", "취소했어요. 제안된 동작은 실행하지 않았습니다.")
+
+    def confirm_actions(self, proposal):
+        if proposal.get("windows_command"):
+            from .command_dialog import CommandDialog
+            dialog = CommandDialog(self.root, proposal["summary"])
+            self.root.wait_window(dialog)
+            return dialog.approved
+        return messagebox.askyesno("AI 동작 확인", proposal["summary"] + "\n\n이 순서로 실행할까요?", parent=self.root)
 
     def open_config(self):
         if self.config_dialog is not None and self.config_dialog.winfo_exists():

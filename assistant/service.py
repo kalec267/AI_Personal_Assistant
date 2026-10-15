@@ -87,7 +87,8 @@ class AssistantService:
             generation, turns = self.history.snapshot()
         messages = [message for turn in turns for message in (
             {"role": "user", "content": turn["user"]}, {"role": "assistant", "content": turn["assistant"]})]
-        result = self.ollama.request(mode, model, text, self.programs.catalog(), history=messages)
+        result = self.ollama.request(mode, model, text, self.programs.catalog(), history=messages,
+                                     allow_windows=options.get("windows_control", False))
         with self._lock:
             if generation != self.history.generation:
                 raise UserError("대화나 연결 설정이 변경되어 이전 응답을 취소했어요. 다시 요청해 주세요.")
@@ -101,7 +102,8 @@ class AssistantService:
     def _interpret_result(self, text, result, generation):
         if not result["calls"]:
             return self._remember(text, {"message": result["content"]}, generation)
-        actions = validate_calls(result["calls"], self.programs)
+        actions = validate_calls(result["calls"], self.programs,
+                                 allow_windows=load_settings(self.data_dir).get("windows_control", False))
         if len(actions) == 1 and actions[0]["name"] == "create_event":
             return self._remember(text, {"message": "AI가 일정 초안을 만들었어요. 날짜와 시간을 확인하고 저장해 주세요.", "draft": actions[0]["args"]},
                                   generation, actions[0]["summary"] + " · 아직 저장하지 않은 초안입니다.")
@@ -114,7 +116,8 @@ class AssistantService:
             self._proposals.clear()
         summary = "\n".join(f"{i+1}. {action['summary']}" for i, action in enumerate(actions))
         reply = self._remember(text, {"message": "다음 동작을 제안했어요. 내용을 확인하고 실행해 주세요.",
-                              "proposal": {"id": identifier, "summary": summary}}, generation,
+                              "proposal": {"id": identifier, "summary": summary,
+                                           "windows_command": any(action["name"] == "run_windows_command" for action in actions)}}, generation,
                                "동작 제안 (확인 대기, 아직 실행하지 않음): " + summary)
         self._proposals[identifier] = (now + 300, actions, reply["history_turn"])
         return reply
@@ -143,14 +146,23 @@ class AssistantService:
                 self.history.update(proposal[2], "실행 제안이 만료되어 아무 동작도 실행하지 않았습니다.")
             raise UserError("실행 제안이 만료되었거나 이미 처리되었어요. 다시 요청하세요.")
         # Validate the complete plan again before any side effect.
-        actions = validate_calls([{"function": {"name": action["name"], "arguments": action["args"]}} for action in proposal[1]], self.programs)
+        allow_windows = load_settings(self.data_dir).get("windows_control", False)
+        try:
+            actions = validate_calls([{"function": {"name": action["name"], "arguments": action["args"]}} for action in proposal[1]], self.programs,
+                                     allow_windows=allow_windows)
+        except UserError:
+            self.history.update(proposal[2], "실행 직전 권한·등록 정보 확인에 실패하여 동작을 실행하지 않았습니다.")
+            raise
         completed = []
         for action in actions:
             try:
-                completed.append(self._list_action(action) if action["name"] == "list_events" else perform(action, self.programs))
-            except (UserError, OSError):
+                # Recheck the saved permission immediately before each command.
+                current_access = load_settings(self.data_dir).get("windows_control", False)
+                completed.append(self._list_action(action) if action["name"] == "list_events" else perform(action, self.programs, allow_windows=current_access))
+            except (UserError, OSError) as error:
                 # Never claim atomicity: already completed actions cannot be undone.
-                result = {"message": "\n".join(completed + [f"중단: {action['summary']} 실행에 실패했어요. 이후 동작은 실행하지 않았습니다."])}
+                detail = ("\n" + str(error)) if action["name"] == "run_windows_command" and isinstance(error, UserError) else ""
+                result = {"message": "\n".join(completed + [f"중단: {action['summary']} 실행에 실패했어요.{detail}\n이후 동작은 실행하지 않았습니다."])}
                 self.history.update(proposal[2], result["message"])
                 return result
         result = {"message": "\n".join(completed)}
