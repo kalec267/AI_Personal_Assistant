@@ -4,16 +4,16 @@
 
 ## Windows에서 실행
 
-1. **Windows 10/11**에 [Python](https://www.python.org/downloads/windows/)을 설치합니다. **Python 3.12 64비트**를 권장합니다. 설치 옵션의 **Python Launcher**와 **Tcl/Tk and IDLE**을 포함하세요. 최소 버전은 3.10이며 마이크 패키지의 휠 제공 여부는 Python 버전에 따라 다릅니다.
-2. 저장소 폴더의 **`setup.bat`**을 한 번 실행합니다. 로컬 `.venv`에 음성 인식 패키지를 설치합니다. 인터넷 연결이 필요합니다.
+1. **Windows 10/11**에 **[Python 3.12 64비트](https://www.python.org/downloads/release/python-31210/)**를 설치합니다. 다운로드 페이지의 **Windows installer (64-bit)**을 선택하고 설치 옵션의 **Python Launcher**와 **Tcl/Tk and IDLE**을 포함하세요. 설치 스크립트는 마이크 패키지와 호환되는 Python 3.12를 명시적으로 사용합니다. 다른 Python 버전이 함께 설치되어 있어도 됩니다.
+2. 저장소 폴더의 **`setup.bat`**을 한 번 실행합니다. 전용 **`.venv-py312`**에 음성 인식 패키지를 설치합니다. 이전 `.venv`와 일정 데이터는 유지됩니다. 인터넷 연결이 필요합니다.
 3. **`start.bat`**을 실행하면 루나 앱 창이 열립니다. 이후에는 `start.bat`만 실행하면 됩니다.
 
 터미널에서 직접 실행할 수도 있습니다.
 
 ```powershell
-py -3 -m venv .venv
-.venv\Scripts\python.exe -m pip install -r requirements.txt
-.venv\Scripts\python.exe -m assistant.app
+py -3.12 -m venv .venv-py312
+.venv-py312\Scripts\python.exe -m pip install --only-binary=PyAudio -r requirements.txt
+.venv-py312\Scripts\python.exe -m assistant.app
 ```
 
 창의 닫기 버튼으로 종료합니다. Windows 설정 → 개인정보 및 보안 → 마이크에서 **데스크톱 앱의 마이크 액세스**를 허용하고 기본 입력 장치를 확인하세요. 마이크 패키지를 설치하지 않아도 텍스트·일정·PC 제어 기능은 사용할 수 있습니다.
@@ -64,7 +64,7 @@ Windows 실행 파일은 **Windows에서 빌드**해야 합니다. 이 Linux 개
 일정은 `%LOCALAPPDATA%\LunaAssistant\calendar.sqlite3`, 음성 설정은 같은 폴더의 `settings.json`에 저장합니다. 이전 버전의 Windows 일정 저장 경로와 동일하여 기존 일정을 그대로 읽습니다. 앱을 닫아도 유지됩니다. 백업하려면 앱을 종료한 뒤 이 폴더를 복사하세요. 다른 데이터 폴더는 다음처럼 지정할 수 있습니다.
 
 ```powershell
-.venv\Scripts\python.exe -m assistant.app --data-dir "D:\LunaData"
+.venv-py312\Scripts\python.exe -m assistant.app --data-dir "D:\LunaData"
 ```
 
 기본 기능은 정해진 한국어 명령을 해석합니다. 자유로운 AI 질문·답변은 **`LUNA_OPENAI_API_KEY` 환경 변수**를 보안 입력 방식으로 설정한 후 앱을 다시 시작하면 사용할 수 있습니다. 키를 소스 코드나 Git에 저장하지 마세요. 기본 모델은 `gpt-4.1-mini`이며 `LUNA_OPENAI_MODEL`로 변경할 수 있습니다. API 접근 권한과 별도 사용 요금이 필요합니다.
@@ -75,11 +75,12 @@ Windows 실행 파일은 **Windows에서 빌드**해야 합니다. 이 Linux 개
 
 - 마이크 오류: `setup.bat` 설치 결과, Windows 기본 입력 장치와 데스크톱 앱 마이크 권한을 확인하세요.
 - 음성·볼륨 오류: Windows PowerShell과 기본 출력 장치가 필요합니다. 조직 정책이 `.ps1` 실행을 차단하면 승인·서명 절차를 따르세요. 앱은 실행 정책을 우회하지 않습니다.
-- 시작 오류: 터미널에서 `.venv\Scripts\python.exe -m assistant.app`을 실행해 출력을 확인하세요. Python의 Tcl/Tk가 설치되어 있어야 합니다.
+- PyAudio 설치 중 `portaudio.h` 오류: 이전 설치 스크립트가 Python 3.14 등을 선택하면 호환 휠 대신 소스 빌드를 시도할 수 있습니다. Python 3.12 64비트를 추가 설치하고 최신 `setup.bat`을 실행하세요. 전용 `.venv-py312`를 만들기 때문에 기존 `.venv`를 삭제할 필요가 없습니다. 수정된 스크립트는 PyAudio의 사전 빌드된 휠만 설치합니다.
+- 시작 오류: 터미널에서 `.venv-py312\Scripts\python.exe -m assistant.app`을 실행해 출력을 확인하세요. Python의 Tcl/Tk가 설치되어 있어야 합니다.
 - Linux 개발: `python -m assistant.app --data-dir /tmp/luna-dev`로 독립 창과 일정을 검증할 수 있습니다. GUI 디스플레이가 필요하며 Windows PC 제어·음성 출력은 사용할 수 없습니다.
 
 ```powershell
-.venv\Scripts\python.exe -m unittest discover -v
+.venv-py312\Scripts\python.exe -m unittest discover -v
 ```
 
 테스트는 명령 해석·데이터 영속성·일정 내보내기·네이티브 UI의 초안 확인·저장·재실행·삭제 흐름을 검증합니다. GUI 테스트는 Linux에 디스플레이가 없으면 건너뜁니다. 음성 인식·Windows 음성·PC 제어·외부 AI는 모의 호출로 검증하므로 실제 장치와 외부 서비스 검증을 대체하지 않습니다. 이전 웹 버전의 회귀 테스트도 유지됩니다.

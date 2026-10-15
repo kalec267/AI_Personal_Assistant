@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .venv/
+.venv-py312/
 .assistant-data/
 build/
 dist/
