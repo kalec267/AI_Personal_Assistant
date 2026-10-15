@@ -1,99 +1,184 @@
-"""Native Ollama and registered-program settings. Never displays stored keys."""
+"""One native settings window for AI, conversation, programs, sound and voice."""
 import functools
 import os
+import re
 import tkinter as tk
 from tkinter import filedialog, ttk
 
+from . import desktop
 from .core import UserError
 from .settings import load_settings, save_settings
 
 MODES = {"기본 명령 (AI 끔)": "off", "Ollama 로컬 · API 키 불필요": "local", "Ollama 클라우드 · API 키 필요": "cloud"}
 
 
+class SettingsPage(ttk.Frame):
+    def __init__(self, parent):
+        super().__init__(parent)
+        canvas = tk.Canvas(self, highlightthickness=0, background="#f2f3f6")
+        scroll = ttk.Scrollbar(self, command=canvas.yview)
+        canvas.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        self.content = ttk.Frame(canvas, padding=20)
+        item = canvas.create_window(0, 0, window=self.content, anchor="nw")
+        self.content.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(item, width=event.width))
+
+
 class ConfigDialog(tk.Toplevel):
     def __init__(self, app):
         super().__init__(app.root)
         self.app = app
-        self.title("LUNA · AI 및 프로그램 설정")
-        self.geometry("660x650")
-        self.minsize(620, 600)
+        self.title("LUNA · 설정")
+        self.geometry("720x720")
+        self.minsize(660, 600)
         self.transient(app.root)
         options = load_settings(app.data_dir)
         self.mode = tk.StringVar(value=next(label for label, value in MODES.items() if value == options.get("ai_mode", "off")))
         self.model = tk.StringVar(value=options.get("ollama_model", "qwen3:4b"))
         self.key = tk.StringVar()
         self.persist = tk.BooleanVar(value=os.name == "nt")
+        self.remember = tk.BooleanVar(value=options.get("remember_chat", False))
+        self.history_turns = tk.IntVar(value=options.get("history_turns", 10))
+        self.speak = tk.BooleanVar(value=app.speak_var.get())
+        self.voice_var = tk.StringVar(value=app.selected_voice())
+        self.volume = tk.DoubleVar(value=options.get("volume", 30))
+        self.volume_label = tk.StringVar(value=f"{round(self.volume.get())}%")
+        self.start_volume = tk.BooleanVar(value=options.get("apply_volume_on_start", False))
         self.feedback = tk.StringVar(value=app.service.credentials.status())
+        self.save_feedback = tk.StringVar(value="변경 후 ‘설정 저장’을 눌러 적용하세요.")
+        self.sound_feedback = tk.StringVar()
+        self.program_feedback = tk.StringVar()
         self.app_name = tk.StringVar()
         self.program_path = ""
         self.path_label = tk.StringVar(value="실행 파일을 선택해 주세요.")
-        notebook = ttk.Notebook(self)
-        notebook.pack(fill="both", expand=True, padx=18, pady=18)
-        ai = ttk.Frame(notebook, padding=18)
-        programs = ttk.Frame(notebook, padding=18)
-        notebook.add(ai, text="Ollama AI")
-        notebook.add(programs, text="프로그램 등록")
-        ttk.Label(ai, text="자연어 명령과 대화", font=("Malgun Gothic", 16, "bold")).pack(anchor="w", pady=(0, 18))
-        ttk.Label(ai, text="연결 방식").pack(anchor="w")
-        mode_combo = ttk.Combobox(ai, textvariable=self.mode, values=list(MODES), state="readonly")
-        mode_combo.pack(fill="x", pady=(5, 15))
-        mode_combo.bind("<<ComboboxSelected>>", self.mode_changed)
-        ttk.Label(ai, text="모델 이름").pack(anchor="w")
-        ttk.Entry(ai, textvariable=self.model).pack(fill="x", pady=(5, 12))
-        ttk.Label(ai, text="로컬: qwen3:4b (Ollama 설치 후 ollama pull qwen3:4b)\n클라우드: gpt-oss:120b (계정별 사용 한도 적용)", wraplength=550).pack(anchor="w", pady=(0, 15))
-        ttk.Label(ai, text="Ollama API 키 · 클라우드 모드에서만 사용").pack(anchor="w")
-        ttk.Entry(ai, textvariable=self.key, show="●").pack(fill="x", pady=(5, 8))
-        ttk.Checkbutton(ai, text="이 Windows 사용자에 암호화 저장 (선택 해제 시 현재 세션만)", variable=self.persist).pack(anchor="w")
-        if os.name != "nt":
-            self.persist.set(False)
-        ttk.Label(ai, text="기존 키는 표시하지 않습니다. 빈칸으로 저장하면 기존 키를 유지합니다.\n키는 ollama.com에만 전송하며, 로컬 모드에서는 전송하지 않습니다.", wraplength=550).pack(anchor="w", pady=12)
-        row = ttk.Frame(ai)
-        row.pack(fill="x", pady=8)
-        ttk.Button(row, text="설정 저장", command=self.save).pack(side="left")
-        ttk.Button(row, text="연결 테스트", command=self.test_connection).pack(side="left", padx=8)
+        footer = ttk.Frame(self, padding=(18, 10))
+        footer.pack(side="bottom", fill="x")
+        buttons = ttk.Frame(footer)
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="닫기", command=self.close).pack(side="right")
+        self.save_button = ttk.Button(buttons, text="설정 저장", command=self.save)
+        self.save_button.pack(side="right", padx=8)
+        ttk.Label(buttons, text="저장한 사용자 설정은 재실행 후에도 유지됩니다.").pack(side="left")
+        ttk.Label(footer, textvariable=self.save_feedback, wraplength=640).pack(anchor="w", pady=(7, 0))
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill="both", expand=True, padx=18, pady=(18, 0))
+        pages = [SettingsPage(self.notebook) for _ in range(3)]
+        for page, name in zip(pages, ("AI · 대화", "프로그램", "소리 · 음성")):
+            self.notebook.add(page, text=name)
+        self._build_ai(pages[0].content)
+        self._build_programs(pages[1].content)
+        self._build_sound(pages[2].content)
+        self.refresh_programs()
+        self.refresh_voices()
+        self.protocol("WM_DELETE_WINDOW", self.close)
+
+    @staticmethod
+    def heading(parent, text):
+        ttk.Label(parent, text=text, font=("Malgun Gothic", 16, "bold")).pack(anchor="w", pady=(0, 15))
+
+    def _build_ai(self, frame):
+        self.heading(frame, "AI 연결과 대화 기억")
+        ttk.Label(frame, text="연결 방식").pack(anchor="w")
+        mode = ttk.Combobox(frame, textvariable=self.mode, values=list(MODES), state="readonly")
+        mode.pack(fill="x", pady=(5, 12))
+        mode.bind("<<ComboboxSelected>>", self.mode_changed)
+        ttk.Label(frame, text="모델 이름").pack(anchor="w")
+        ttk.Entry(frame, textvariable=self.model).pack(fill="x", pady=(5, 10))
+        ttk.Label(frame, text="로컬: qwen3:4b · 클라우드: gpt-oss:120b\n로컬 모드는 Ollama 설치 후 모델 다운로드가 필요합니다.", wraplength=580).pack(anchor="w", pady=(0, 12))
+        ttk.Label(frame, text="Ollama API 키 · 클라우드에서만 사용").pack(anchor="w")
+        ttk.Entry(frame, textvariable=self.key, show="●").pack(fill="x", pady=5)
+        ttk.Checkbutton(frame, text="이 Windows 사용자에 키 암호화 저장", variable=self.persist).pack(anchor="w")
+        ttk.Label(frame, text="기존 키는 표시하지 않습니다. 빈칸은 기존 키를 유지합니다.\n체크 해제 시 새로 입력한 키는 현재 세션에서만 사용합니다.", wraplength=580).pack(anchor="w", pady=8)
+        row = ttk.Frame(frame)
+        row.pack(fill="x", pady=(0, 15))
+        ttk.Button(row, text="연결 테스트", command=self.test_connection).pack(side="left")
         ttk.Button(row, text="저장한 키 삭제", command=self.delete_key).pack(side="right")
-        ttk.Label(ai, textvariable=self.feedback, wraplength=550).pack(anchor="w", pady=12)
-        ttk.Label(programs, text="AI로 실행할 프로그램", font=("Malgun Gothic", 16, "bold")).pack(anchor="w", pady=(0, 12))
-        ttk.Label(programs, text="사용자가 직접 선택한 .exe만 등록합니다. AI가 실행 경로나 인자를 만들 수는 없습니다.", wraplength=550).pack(anchor="w", pady=(0, 12))
-        self.program_list = ttk.Treeview(programs, columns=("name",), show="headings", height=6, selectmode="browse")
-        self.program_list.heading("name", text="이름")
-        self.program_list.pack(fill="both", expand=True)
-        ttk.Label(programs, text="부를 이름 (예: 크롬, 음악 앱)").pack(anchor="w", pady=(14, 5))
-        ttk.Entry(programs, textvariable=self.app_name).pack(fill="x")
-        ttk.Label(programs, textvariable=self.path_label, wraplength=550).pack(anchor="w", pady=8)
-        row = ttk.Frame(programs)
+        ttk.Separator(frame).pack(fill="x", pady=8)
+        ttk.Label(frame, text="Ollama에 함께 보낼 최근 질문·답변 수").pack(anchor="w", pady=(8, 5))
+        ttk.Spinbox(frame, from_=1, to=20, textvariable=self.history_turns, width=7).pack(anchor="w")
+        ttk.Checkbutton(frame, text="최근 대화를 이 PC에 저장해 앱 재시작 후에도 이어가기", variable=self.remember).pack(anchor="w", pady=(10, 5))
+        ttk.Label(frame, text="선택하지 않아도 앱을 사용하는 동안 최근 대화를 기억합니다.\n저장 기록은 암호화되지 않은 개인 파일이며, 클라우드 모드에서는 최근 대화도 전송됩니다.\n모델·연결 방식 변경 또는 ‘새 대화’를 누르면 문맥을 초기화합니다.", wraplength=580).pack(anchor="w", pady=8)
+        ttk.Button(frame, text="새 대화 시작", command=self.app.new_conversation).pack(anchor="w", pady=5)
+        ttk.Label(frame, textvariable=self.feedback, wraplength=580).pack(anchor="w", pady=12)
+
+    def _build_programs(self, frame):
+        self.heading(frame, "실행 프로그램")
+        ttk.Label(frame, text="직접 선택한 .exe에 부를 이름을 지정하세요. 등록·삭제는 즉시 저장됩니다.", wraplength=580).pack(anchor="w", pady=(0, 12))
+        self.program_list = ttk.Treeview(frame, columns=("name",), show="headings", height=7, selectmode="browse")
+        self.program_list.heading("name", text="프로그램 이름")
+        self.program_list.pack(fill="x")
+        ttk.Label(frame, text="부를 이름 (예: 크롬, 음악 앱)").pack(anchor="w", pady=(15, 5))
+        ttk.Entry(frame, textvariable=self.app_name).pack(fill="x")
+        ttk.Label(frame, textvariable=self.path_label, wraplength=580).pack(anchor="w", pady=10)
+        row = ttk.Frame(frame)
         row.pack(fill="x")
         ttk.Button(row, text=".exe 선택", command=self.choose_program).pack(side="left")
         ttk.Button(row, text="등록", command=self.register_program).pack(side="left", padx=8)
         ttk.Button(row, text="선택한 등록 삭제", command=self.remove_program).pack(side="right")
-        self.program_feedback = tk.StringVar()
-        ttk.Label(programs, textvariable=self.program_feedback, wraplength=550).pack(anchor="w", pady=12)
-        self.refresh_programs()
-        self.protocol("WM_DELETE_WINDOW", self.close)
+        ttk.Label(frame, textvariable=self.program_feedback, wraplength=580).pack(anchor="w", pady=15)
+
+    def _build_sound(self, frame):
+        self.heading(frame, "목소리와 사운드")
+        ttk.Checkbutton(frame, text="답변을 음성으로 읽기", variable=self.speak).pack(anchor="w", pady=(0, 12))
+        ttk.Label(frame, text="목소리 · local:F1~F5는 한국어 여성 음성").pack(anchor="w")
+        self.voice_combo = ttk.Combobox(frame, textvariable=self.voice_var, state="readonly")
+        self.voice_combo.pack(fill="x", pady=8)
+        row = ttk.Frame(frame)
+        row.pack(fill="x")
+        ttk.Button(row, text="목소리 들어보기", command=self.test_voice).pack(side="left")
+        self.install_voice_button = ttk.Button(row, text="로컬 음성 설치 (약 81MB)", command=self.app.install_voice)
+        self.install_voice_button.pack(side="right")
+        ttk.Label(frame, textvariable=self.app.voice_note, wraplength=580).pack(anchor="w", pady=12)
+        ttk.Separator(frame).pack(fill="x", pady=10)
+        ttk.Label(frame, text="저장할 볼륨 값").pack(anchor="w", pady=(8, 0))
+        row = ttk.Frame(frame)
+        row.pack(fill="x", pady=8)
+        ttk.Scale(row, from_=0, to=100, variable=self.volume, command=lambda value: self.volume_label.set(f"{round(float(value))}%")).pack(side="left", fill="x", expand=True)
+        ttk.Label(row, textvariable=self.volume_label, width=6).pack(side="right")
+        row = ttk.Frame(frame)
+        row.pack(fill="x", pady=5)
+        self.volume_button = ttk.Button(row, text="지금 볼륨 적용", command=self.apply_volume)
+        self.volume_button.pack(side="left")
+        mute = ttk.Button(row, text="음소거", command=lambda: self.sound_command("mute"))
+        mute.pack(side="left", padx=8)
+        self.unmute_button = ttk.Button(row, text="음소거 해제", command=lambda: self.sound_command("unmute"))
+        self.unmute_button.pack(side="left")
+        if os.name != "nt":
+            for button in (self.volume_button, mute, self.unmute_button):
+                button.configure(state="disabled")
+        ttk.Checkbutton(frame, text="앱 시작 시 저장한 볼륨을 자동 적용", variable=self.start_volume).pack(anchor="w", pady=(12, 5))
+        ttk.Label(frame, text="볼륨 값은 ‘설정 저장’으로 기억합니다. ‘지금 볼륨 적용’은 현재 PC의 소리를 바꿉니다.", wraplength=580).pack(anchor="w", pady=8)
+        ttk.Label(frame, textvariable=self.sound_feedback, wraplength=580).pack(anchor="w", pady=8)
 
     def mode_changed(self, _event=None):
-        mode = MODES[self.mode.get()]
         if self.model.get() in {"qwen3:4b", "gpt-oss:120b", ""}:
-            self.model.set("gpt-oss:120b" if mode == "cloud" else "qwen3:4b")
+            self.model.set("gpt-oss:120b" if MODES[self.mode.get()] == "cloud" else "qwen3:4b")
 
     def save(self):
         try:
             model = self.model.get().strip()
-            import re
-            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:-]{0,119}", model):
-                raise UserError("올바른 모델 이름을 입력하세요.")
-            key = self.key.get()
-            if key.strip():
-                self.app.service.credentials.set(key, self.persist.get())
+            if self.mode.get() not in MODES or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:-]{0,119}", model):
+                raise UserError("올바른 연결 방식과 모델 이름을 입력하세요.")
+            turns, volume = self.history_turns.get(), round(self.volume.get())
+            if not 1 <= turns <= 20 or not 0 <= volume <= 100:
+                raise UserError("최근 대화 수는 1~20, 볼륨은 0~100으로 설정하세요.")
+            if self.key.get().strip():
+                self.app.service.credentials.set(self.key.get(), self.persist.get())
                 self.key.set("")
-            options = load_settings(self.app.data_dir)
-            save_settings(self.app.data_dir, options.get("voice", ""), self.app.speak_var.get(),
-                          ai_mode=MODES[self.mode.get()], ollama_model=model)
-            self.app.mode_var.set(self.mode.get() + " · 데스크톱")
-            self.feedback.set("설정 저장 완료 · " + self.app.service.credentials.status())
+            save_settings(self.app.data_dir, self.voice_var.get(), self.speak.get(), ai_mode=MODES[self.mode.get()],
+                          ollama_model=model, remember_chat=self.remember.get(), history_turns=turns,
+                          volume=volume, apply_volume_on_start=self.start_volume.get())
+            self.app.apply_settings()
+            self.feedback.set("사용자 설정 저장 완료 · " + self.app.service.credentials.status())
+            self.save_feedback.set("사용자 설정을 저장했어요. 재실행 후에도 유지됩니다.")
+            self.sound_feedback.set("목소리·답변 읽기·볼륨 기본값을 저장했어요.")
             return True
-        except (UserError, OSError, ValueError) as error:
-            self.feedback.set(str(error) if isinstance(error, UserError) else "설정을 저장하지 못했어요.")
+        except (UserError, OSError, ValueError, tk.TclError) as error:
+            message = str(error) if isinstance(error, UserError) else "설정을 저장하지 못했어요. 입력값과 데이터 폴더 권한을 확인하세요."
+            self.feedback.set(message)
+            self.save_feedback.set(message)
             return False
 
     def test_connection(self):
@@ -141,20 +226,44 @@ class ConfigDialog(tk.Toplevel):
         try:
             self.app.service.programs.register(self.app_name.get(), self.program_path)
             self.refresh_programs()
-            self.program_feedback.set("등록했어요. AI에게 이 이름으로 실행을 요청하세요.")
+            self.program_feedback.set("등록을 저장했어요. AI에게 이 이름으로 요청하세요.")
         except (UserError, OSError) as error:
             self.program_feedback.set(str(error) if isinstance(error, UserError) else "등록 목록을 저장하지 못했어요.")
 
     def remove_program(self):
         selected = self.program_list.selection()
-        if not selected:
-            return
-        try:
-            self.app.service.programs.remove(selected[0])
-            self.refresh_programs()
-            self.program_feedback.set("등록을 삭제했어요. 프로그램 파일은 그대로 유지됩니다.")
-        except (UserError, OSError) as error:
-            self.program_feedback.set(str(error) if isinstance(error, UserError) else "등록 삭제에 실패했어요.")
+        if selected:
+            try:
+                self.app.service.programs.remove(selected[0])
+                self.refresh_programs()
+                self.program_feedback.set("등록 삭제를 저장했어요. 프로그램 파일은 그대로 유지됩니다.")
+            except (UserError, OSError) as error:
+                self.program_feedback.set(str(error) if isinstance(error, UserError) else "등록 삭제에 실패했어요.")
+
+    def refresh_voices(self):
+        values = [voice["name"] for voice in self.app.voice_items]
+        self.voice_combo.configure(values=values)
+        if self.voice_var.get() not in values and self.app.selected_voice() in values:
+            self.voice_var.set(self.app.selected_voice())
+        self.install_voice_button.configure(state="disabled" if self.app.installing_voice else "normal")
+
+    def test_voice(self):
+        self.app.say("안녕하세요. 당신의 개인 비서 루나예요.", force=True, name=self.voice_var.get())
+
+    def apply_volume(self):
+        self.sound_command("set", round(self.volume.get()))
+
+    def sound_command(self, mode, value=0):
+        self.sound_feedback.set("사운드 명령 처리 중…")
+        self.app.run_task(functools.partial(desktop.volume, mode, value), self.sound_done, self.sound_failed)
+
+    def sound_done(self, message):
+        if self.winfo_exists():
+            self.sound_feedback.set(message)
+
+    def sound_failed(self, error):
+        if self.winfo_exists():
+            self.sound_feedback.set(str(error))
 
     def close(self):
         self.key.set("")

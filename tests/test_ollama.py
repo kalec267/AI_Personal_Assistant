@@ -136,8 +136,8 @@ class ProposalTests(unittest.TestCase):
                 self.service.confirm_proposal(identifier)
             result = self.propose([call("launch_program", app_id="notepad")])
             identifier = result["proposal"]["id"]
-            _, actions = self.service._proposals[identifier]
-            self.service._proposals[identifier] = (0, actions)
+            _, actions, turn = self.service._proposals[identifier]
+            self.service._proposals[identifier] = (0, actions, turn)
             with self.assertRaises(UserError):
                 self.service.confirm_proposal(identifier)
             launch.assert_not_called()

@@ -8,3 +8,9 @@ dist/
 .env
 .env.*
 *.dpapi
+conversation.json
+conversation-*.tmp
+programs.json
+settings.json
+calendar.sqlite3*
+models/

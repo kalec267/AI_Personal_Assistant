@@ -12,6 +12,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from .core import UserError
+from . import desktop
 from .service import AssistantService
 from .config_dialog import ConfigDialog
 from .local_voice import install_model, MODEL_NAME, MODEL_FILES
@@ -22,9 +23,10 @@ BG, PAPER, INK, MUTED, BLUE, LINE = "#f4f6fb", "#ffffff", "#253047", "#7b879e", 
 
 
 class EventDialog(tk.Toplevel):
-    def __init__(self, app, draft=None):
+    def __init__(self, app, draft=None, turn_id=None):
         super().__init__(app.root)
         self.app = app
+        self.turn_id = turn_id
         self.title("LUNA · 새 일정")
         self.configure(bg=PAPER)
         self.resizable(False, False)
@@ -58,6 +60,7 @@ class EventDialog(tk.Toplevel):
             self.error_var.set(str(error))
             return
         self.app.day_var.set(event["start"][:10])
+        self.app.service.draft_saved(self.turn_id, event)
         self.app.refresh_events()
         self.app.append_message("루나", "일정을 저장했어요.")
         self.app.say("일정을 저장했어요.")
@@ -79,20 +82,19 @@ class LunaApp:
         self.command_busy = False
         self.listening = False
         self.voice_items = []
+        self.installing_voice = False
         self.last_dialog = None
         self.config_dialog = None
         self.mode_var = tk.StringVar(value={"off": "기본 명령", "local": "Ollama 로컬", "cloud": "Ollama 클라우드"}.get(self.settings.get("ai_mode", "off"), "기본 명령") + " · 데스크톱")
         self.command_var = tk.StringVar()
         self.day_var = tk.StringVar(value=dt.date.today().isoformat())
         self.status_var = tk.StringVar(value="준비됐어요. 무엇을 도와드릴까요?")
-        self.voice_var = tk.StringVar()
+        self.voice_var = tk.StringVar(value=self.settings.get("voice", ""))
         self.voice_note = tk.StringVar(value="Windows 음성 목록을 불러오는 중…")
         self.speak_var = tk.BooleanVar(value=self.settings.get("speak", True))
-        self.volume_var = tk.DoubleVar(value=30)
-        self.volume_label = tk.StringVar(value="30%")
         self.root.title("LUNA · 나만의 개인 비서")
-        self.root.geometry("1180x820")
-        self.root.minsize(960, 720)
+        self.root.geometry("1180x760")
+        self.root.minsize(960, 620)
         self.root.configure(bg=BG)
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(1, weight=1)
@@ -100,12 +102,15 @@ class LunaApp:
         self._style()
         self._build()
         self.refresh_events()
-        self.append_message("루나", "안녕하세요. 당신의 개인 비서 루나예요. 일정을 정리하거나 PC를 제어해 보세요.")
+        self.render_conversation()
         self._poll_id = self.root.after(60, self._poll)
         if load_voices:
             self.run_task(self.voice.list, self._voices_loaded, lambda error: self.voice_note.set(str(error)))
         else:
             self.voice_note.set("로컬 한국어 여성 음성 또는 Windows 설치 음성을 선택할 수 있어요.")
+        if self.settings.get("apply_volume_on_start", False) and os.name == "nt":
+            self.run_task(functools.partial(desktop.volume, "set", self.settings.get("volume", 30)),
+                          lambda message: self.status_var.set(message), self.show_error)
 
     @staticmethod
     def label(parent, text, *, size=11, color=INK, bold=False):
@@ -137,7 +142,8 @@ class LunaApp:
         header.grid(row=0, column=0, sticky="ew")
         self.label(header, "LUNA ✦", size=23, bold=True).pack(side="left")
         self.label(header, "내 일상에, 조금 더 여유를.", size=10, color=MUTED).pack(side="left", padx=22)
-        self.button(header, "AI · 프로그램 설정", self.open_config).pack(side="right")
+        self.settings_button = self.button(header, "설정", self.open_config)
+        self.settings_button.pack(side="right")
         tk.Label(header, textvariable=self.mode_var, bg=BG, fg=BLUE, font=("Malgun Gothic", 9)).pack(side="right", padx=15)
         body = tk.Frame(self.root, bg=BG, padx=28)
         body.grid(row=1, column=0, sticky="nsew")
@@ -163,6 +169,7 @@ class LunaApp:
         suggestions.pack(fill="x", pady=10)
         self.button(suggestions, "내일 회의 일정 추가", lambda: self.submit("내일 오후 3시 팀 회의 일정 추가")).pack(side="left", padx=(0, 7))
         self.button(suggestions, "오늘 일정", lambda: self.submit("오늘 일정 보여줘")).pack(side="left")
+        self.button(suggestions, "새 대화", self.new_conversation).pack(side="right")
         input_row = tk.Frame(left, bg=PAPER)
         input_row.pack(fill="x")
         self.entry = ttk.Entry(input_row, textvariable=self.command_var)
@@ -209,45 +216,8 @@ class LunaApp:
         self.button(actions, "+ 일정", self.open_event, primary=True).pack(side="left")
         self.button(actions, "삭제", self.delete_event).pack(side="left", padx=6)
         self.button(actions, "내보내기", self.export_calendar).pack(side="right")
-        controls = self.panel(right, "03 / QUICK ACTIONS", "일상의 작은 명령")
-        controls.grid(row=1, column=0, sticky="ew", pady=(14, 0))
-        apps = tk.Frame(controls, bg=PAPER)
-        apps.pack(fill="x")
-        for name in ("메모장", "계산기", "탐색기", "엣지"):
-            button = self.button(apps, name, lambda name=name: self.submit(f"{name} 실행"))
-            button.pack(side="left", expand=True, fill="x", padx=2)
-            if os.name != "nt":
-                button.configure(state="disabled")
-        sound = tk.Frame(controls, bg=PAPER)
-        sound.pack(fill="x", pady=(10, 0))
-        self.label(sound, "볼륨", size=10, color=MUTED).pack(side="left")
-        tk.Scale(sound, from_=0, to=100, orient="horizontal", showvalue=False, variable=self.volume_var, command=lambda value: self.volume_label.set(f"{round(float(value))}%"), bg=PAPER, troughcolor=LINE, highlightthickness=0, bd=0, width=7).pack(side="left", fill="x", expand=True, padx=8)
-        tk.Label(sound, textvariable=self.volume_label, bg=PAPER, fg=BLUE, width=4).pack(side="left")
-        volume_button = self.button(sound, "적용", lambda: self.submit(f"볼륨 {round(self.volume_var.get())}퍼센트"))
-        self.volume_button = volume_button
-        volume_button.pack(side="left", padx=(4, 0))
-        mute_row = tk.Frame(controls, bg=PAPER)
-        mute_row.pack(fill="x", pady=(8, 0))
-        mute = self.button(mute_row, "음소거", lambda: self.submit("음소거"))
-        mute.pack(side="left")
-        unmute = self.button(mute_row, "음소거 해제", lambda: self.submit("음소거 해제"))
-        self.unmute_button = unmute
-        unmute.pack(side="left", padx=6)
-        if os.name != "nt":
-            for button in (volume_button, mute, unmute):
-                button.configure(state="disabled")
-        settings = tk.Frame(self.root, bg=PAPER, padx=28, pady=14, highlightbackground=LINE, highlightthickness=1)
-        settings.grid(row=2, column=0, sticky="ew", padx=28, pady=(14, 20))
-        self.label(settings, "루나의 목소리", bold=True).grid(row=0, column=0, sticky="w", padx=(0, 18))
-        settings.columnconfigure(1, weight=1)
-        self.voice_combo = ttk.Combobox(settings, textvariable=self.voice_var, state="readonly")
-        self.voice_combo.grid(row=0, column=1, sticky="ew")
-        self.voice_combo.bind("<<ComboboxSelected>>", lambda _event: self.persist_settings())
-        tk.Checkbutton(settings, text="답변 읽기", variable=self.speak_var, command=self._toggle_speech, bg=PAPER, activebackground=PAPER, fg=MUTED, selectcolor=PAPER).grid(row=0, column=2, padx=10)
-        self.button(settings, "들어보기", lambda: self.say("안녕하세요. 당신의 개인 비서 루나예요.", force=True)).grid(row=0, column=3)
-        tk.Label(settings, textvariable=self.voice_note, bg=PAPER, fg=MUTED, anchor="w", justify="left", wraplength=720, font=("Malgun Gothic", 9)).grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 0))
-        self.install_voice_button = self.button(settings, "로컬 음성 설치", self.install_voice)
-        self.install_voice_button.grid(row=1, column=3, pady=(8, 0))
+        footer = self.label(self.root, "목소리 · 볼륨 · 프로그램 · 대화 기억을 상단 설정에서 나에게 맞게 바꿔 보세요.", size=9, color=MUTED)
+        footer.grid(row=2, column=0, sticky="w", padx=28, pady=(14, 18))
         self.entry.focus_set()
 
     @staticmethod
@@ -267,6 +237,48 @@ class LunaApp:
             self.chat.delete("1.0", "100.0")
         self.chat.configure(state="disabled")
         self.chat.see("end")
+
+    def render_conversation(self):
+        self.chat.configure(state="normal")
+        self.chat.delete("1.0", "end")
+        self.chat.configure(state="disabled")
+        _, turns = self.service.history.snapshot()
+        if turns:
+            for turn in turns:
+                self.append_message("나", turn["user"])
+                self.append_message("루나", turn["assistant"])
+        else:
+            self.append_message("루나", "안녕하세요. 당신의 개인 비서 루나예요. 일정을 정리하거나 PC를 제어해 보세요.")
+
+    def new_conversation(self):
+        if self.command_busy:
+            self.status_var.set("현재 요청이 끝난 뒤 새 대화를 시작해 주세요.")
+            return False
+        _, turns = self.service.history.snapshot()
+        if turns and not messagebox.askyesno("새 대화", "최근 대화를 초기화할까요? PC에 저장한 최근 대화도 비워집니다.", parent=self.root):
+            return False
+        try:
+            self.service.clear_conversation()
+        except OSError:
+            self.show_error(UserError("저장된 대화를 지우지 못했어요. 데이터 폴더 권한을 확인해 주세요."))
+            return False
+        self.render_conversation()
+        self.status_var.set("새 대화를 시작했어요.")
+        return True
+
+    def apply_settings(self):
+        self.settings = load_settings(self.data_dir)
+        changed = self.service.sync_settings(self.settings)
+        self.speak_var.set(self.settings.get("speak", True))
+        self.voice_var.set(self.settings.get("voice", ""))
+        self.mode_var.set({"off": "기본 명령", "local": "Ollama 로컬", "cloud": "Ollama 클라우드"}.get(self.settings.get("ai_mode", "off"), "기본 명령") + " · 데스크톱")
+        if not self.speak_var.get():
+            self.voice.stop()
+        if self.selected_voice():
+            self.voice_note.set(self._voice_description(self.selected_voice()))
+        if changed:
+            self.render_conversation()
+            self.status_var.set("연결 방식 또는 모델이 바뀌어 새 대화를 시작했어요.")
 
     def run_task(self, work, success, error=None):
         # Keep every Tk callback on the UI thread. Workers must hold no Tk objects,
@@ -327,13 +339,13 @@ class LunaApp:
     def _command_done(self, result):
         self.command_busy = False
         self.send_button.configure(state="normal")
-        self.status_var.set("준비됐어요. 무엇을 도와드릴까요?")
+        self.status_var.set(self.service.history.warning or "준비됐어요. 무엇을 도와드릴까요?")
         self.append_message("루나", result["message"])
         self.say(result["message"])
         if result.get("open_settings"):
             self.open_config()
         if result.get("draft"):
-            self.open_event(result["draft"])
+            self.open_event(result["draft"], result.get("history_turn"))
         if result.get("proposal"):
             proposal = result["proposal"]
             if messagebox.askyesno("AI 동작 확인", proposal["summary"] + "\n\n이 순서로 실행할까요?", parent=self.root):
@@ -351,11 +363,11 @@ class LunaApp:
             return
         self.config_dialog = ConfigDialog(self)
 
-    def open_event(self, draft=None):
+    def open_event(self, draft=None, turn_id=None):
         if self.last_dialog is not None and self.last_dialog.winfo_exists():
             self.last_dialog.lift()
             return
-        self.last_dialog = EventDialog(self, draft)
+        self.last_dialog = EventDialog(self, draft, turn_id)
 
     def refresh_events(self):
         try:
@@ -431,14 +443,17 @@ class LunaApp:
 
     def _voices_loaded(self, voices):
         self.voice_items = voices
-        labels = [f"{voice['name']} · {voice['culture']} · {'여성' if voice['gender'] == 'Female' else '남성' if voice['gender'] == 'Male' else voice['gender']}" for voice in voices]
-        self.voice_combo.configure(values=labels)
-        name = preferred_voice(voices, self.settings.get("voice", ""))
+        name = preferred_voice(voices, self.voice_var.get() or self.settings.get("voice", ""))
         if name:
-            self.voice_combo.current(next(i for i, voice in enumerate(voices) if voice["name"] == name))
+            self.voice_var.set(name)
             self.voice_note.set(self._voice_description(name))
         else:
             self.voice_note.set("한국어 여성 음성이 없어요. Windows 한국어 음성 설치 후 앱을 다시 시작하거나 목록에서 직접 선택하세요.")
+        self.refresh_voice_settings()
+
+    def refresh_voice_settings(self):
+        if self.config_dialog is not None and self.config_dialog.winfo_exists():
+            self.config_dialog.refresh_voices()
 
     def _voice_description(self, name):
         if name.startswith("local:"):
@@ -447,26 +462,32 @@ class LunaApp:
         return "Windows에 설치된 음성을 사용해요. ‘들어보기’로 확인해 주세요."
 
     def install_voice(self):
-        self.install_voice_button.configure(state="disabled")
+        if self.installing_voice:
+            return
+        self.installing_voice = True
+        self.refresh_voice_settings()
         self.voice_note.set("로컬 모델 다운로드·SHA-256 검증 중… 약 81MB이며 설치 후에는 오프라인으로 출력합니다.")
         self.run_task(functools.partial(install_model, self.data_dir), self._voice_installed, self._voice_install_failed)
 
     def _voice_installed(self, _path):
-        self.install_voice_button.configure(state="normal")
+        self.installing_voice = False
         self.settings["voice"] = "local:F1"
+        self.voice_var.set("local:F1")
         self.run_task(self.voice.list, self._installed_voices_loaded, self._voice_install_failed)
 
     def _installed_voices_loaded(self, voices):
         self._voices_loaded(voices)
+        if self.config_dialog is not None and self.config_dialog.winfo_exists():
+            self.config_dialog.voice_var.set(self.selected_voice())
         self.persist_settings()
 
     def _voice_install_failed(self, error):
-        self.install_voice_button.configure(state="normal")
+        self.installing_voice = False
+        self.refresh_voice_settings()
         self.voice_note.set(str(error))
 
     def selected_voice(self):
-        index = self.voice_combo.current()
-        return self.voice_items[index]["name"] if 0 <= index < len(self.voice_items) else ""
+        return self.voice_var.get()
 
     def persist_settings(self):
         try:
@@ -482,10 +503,10 @@ class LunaApp:
         if not self.speak_var.get():
             self.voice.stop()
 
-    def say(self, text, force=False):
+    def say(self, text, force=False, name=None):
         if not force and not self.speak_var.get():
             return
-        name = self.selected_voice()
+        name = self.selected_voice() if name is None else name
         if not name:
             if force:
                 self.voice_note.set("먼저 사용할 음성을 선택해 주세요. 한국어 여성 음성은 Windows 설정에서 설치할 수 있어요.")

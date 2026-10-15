@@ -31,7 +31,7 @@ class Ollama:
     def __init__(self, credentials):
         self.credentials = credentials
 
-    def request(self, mode, model, text, catalog):
+    def request(self, mode, model, text, catalog, *, history=None):
         if mode not in {"local", "cloud"}:
             raise UserError("Ollama 로컬 또는 클라우드를 선택하세요.")
         if not isinstance(model, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:-]{0,119}", model):
@@ -47,7 +47,8 @@ class Ollama:
         prompt = (
             "당신은 한국어 개인 비서 루나입니다. 명확한 PC 조작 요청만 제공된 도구로 제안하세요. "
             "아직 실행되지 않았으므로 완료했다고 말하지 마세요. 질문·부정·취소에는 조작을 제안하지 마세요. "
-            "이전에 한 작업을 가정하지 마세요. 한 요청에 최대 5개 동작입니다. 등록 앱 ID만 사용하세요. "
+            "최근 대화를 참고해 후속 질문과 생략된 표현을 이해하세요. 과거 작업은 새 요청 없이 반복하지 마세요. "
+            "조작 기록의 대기·취소·실패·완료 상태를 구분하세요. 한 요청에 최대 5개 동작입니다. 등록 앱 ID만 사용하세요. "
             "셸 명령, 임의 파일 조작, 코드 실행은 지원하지 않습니다. 정보가 부족하면 질문하세요. "
             "일정 생성은 다른 동작과 섞지 마세요. 날짜·시각·제목이 누락되거나 오전/오후가 불명확하면 물어보세요. "
             "일정 종료를 말하지 않으면 1시간입니다. URL은 사용자가 지정한 HTTPS 사이트만 제안하세요. "
@@ -55,8 +56,16 @@ class Ollama:
             f"현재 PC 시각: {dt.datetime.now().astimezone().isoformat()}. "
             "등록 프로그램: " + json.dumps(catalog, ensure_ascii=False)
         )
+        previous = []
+        if history is not None:
+            if not isinstance(history, list) or len(history) > 40:
+                raise UserError("대화 기록 형식이 올바르지 않습니다.")
+            for item in history:
+                if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"} or not isinstance(item.get("content"), str):
+                    raise UserError("대화 기록은 사용자와 비서의 텍스트만 포함할 수 있습니다.")
+                previous.append({"role": item["role"], "content": item["content"][:6000]})
         payload = {"model": model, "stream": False, "messages": [
-            {"role": "system", "content": prompt}, {"role": "user", "content": text}],
+            {"role": "system", "content": prompt}] + previous + [{"role": "user", "content": text}],
             "tools": tools(catalog), "options": {"temperature": 0, "num_predict": 1800}}
         request = urllib.request.Request(endpoint, data=json.dumps(payload).encode(), headers=headers)
         try:
@@ -78,7 +87,7 @@ class Ollama:
             if error.code in (401, 403):
                 if mode == "cloud":
                     raise UserError(f"Ollama 클라우드 인증 실패 (HTTP {error.code}). "
-                                    "‘AI · 프로그램 설정’의 ‘Ollama API 키’에 Ollama에서 발급한 키를 다시 등록하고 연결 테스트를 눌러 주세요.") from None
+                                    "‘설정’의 ‘Ollama API 키’에 Ollama에서 발급한 키를 다시 등록하고 연결 테스트를 눌러 주세요.") from None
                 raise UserError(f"Ollama 로컬 서버 접근 거부 (HTTP {error.code}). 로컬 Ollama 실행 상태와 접근 정책을 확인해 주세요.") from None
             if error.code == 429:
                 raise UserError("Ollama 사용 한도에 도달했어요. 잠시 후 다시 시도하거나 로컬 모드를 사용하세요.") from None

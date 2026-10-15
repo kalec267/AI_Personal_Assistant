@@ -206,13 +206,16 @@ class NativeUITests(unittest.TestCase):
         self.assertEqual(self.app.callbacks, {})
         callback.assert_not_called()
 
-    def test_minimum_window_keeps_input_and_voice_controls_visible(self):
-        self.root.geometry("960x720")
+    def test_main_window_has_one_settings_entry_and_no_sound_controls(self):
+        self.root.geometry("960x620")
         self.root.update()
         bottom = self.root.winfo_rooty() + self.root.winfo_height()
-        for widget in (self.app.entry, self.app.send_button, self.app.voice_combo, self.app.volume_button, self.app.unmute_button, self.app.install_voice_button):
+        for widget in (self.app.entry, self.app.send_button, self.app.settings_button):
             self.assertTrue(widget.winfo_ismapped())
             self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(), bottom)
+        self.assertEqual(self.app.settings_button.cget("text"), "설정")
+        self.assertFalse(hasattr(self.app, "voice_combo"))
+        self.assertFalse(hasattr(self.app, "volume_button"))
 
     def test_ai_proposal_cancelled_in_native_ui_does_not_launch(self):
         save_settings(self.temp.name, "", False, ai_mode="local", ollama_model="qwen3:4b")
@@ -254,6 +257,70 @@ class NativeUITests(unittest.TestCase):
             self.assertEqual(self.app.config_dialog.mode.get(), "기본 명령 (AI 끔)")
             network.assert_not_called()
             self.app.config_dialog.close()
+
+    def test_all_user_preferences_restore_after_app_restart(self):
+        self.app._voices_loaded([{"name": "local:F4", "culture": "ko-KR", "gender": "Female"}])
+        self.app.open_config()
+        dialog = self.app.config_dialog
+        self.assertEqual([dialog.notebook.tab(tab, "text") for tab in dialog.notebook.tabs()], ["AI · 대화", "프로그램", "소리 · 음성"])
+        dialog.mode.set("Ollama 로컬 · API 키 불필요")
+        dialog.model.set("qwen3:4b")
+        dialog.voice_var.set("local:F4")
+        dialog.speak.set(False)
+        dialog.volume.set(42.8)
+        dialog.start_volume.set(True)
+        dialog.remember.set(True)
+        dialog.history_turns.set(4)
+        with patch("assistant.app.desktop.volume") as volume:
+            self.assertTrue(dialog.save())
+            volume.assert_not_called()
+        dialog.close()
+        self.app.close()
+        self.root = tk.Tk()
+        with patch("assistant.app.desktop.volume", return_value="저장 볼륨 43%") as volume:
+            self.app = LunaApp(self.root, self.temp.name, voice=self.voice, load_voices=False)
+            if os.name == "nt":
+                self.wait_for(lambda: volume.called)
+                volume.assert_called_once_with("set", 43)
+            self.root.update()
+        self.assertEqual(self.app.selected_voice(), "local:F4")
+        self.assertFalse(self.app.speak_var.get())
+        self.app.open_config()
+        restored = self.app.config_dialog
+        self.assertEqual(restored.volume.get(), 43)
+        self.assertTrue(restored.start_volume.get())
+        self.assertTrue(restored.remember.get())
+        self.assertEqual(restored.history_turns.get(), 4)
+        restored.close()
+
+    def test_volume_in_settings_does_not_need_ai_connection(self):
+        self.app.open_config()
+        dialog = self.app.config_dialog
+        dialog.volume.set(34.8)
+        with patch("assistant.config_dialog.desktop.volume", return_value="볼륨 35퍼센트") as volume, patch.object(self.app.service.ollama, "request") as ai:
+            dialog.apply_volume()
+            self.wait_for(lambda: "35" in dialog.sound_feedback.get())
+            volume.assert_called_once_with("set", 35)
+            ai.assert_not_called()
+        dialog.geometry("660x600")
+        self.root.update()
+        self.assertLessEqual(dialog.save_button.winfo_rooty() + dialog.save_button.winfo_height(), dialog.winfo_rooty() + dialog.winfo_height())
+        dialog.close()
+
+    def test_saved_conversation_restores_in_chat_and_new_chat_clears_it(self):
+        save_settings(self.temp.name, "", False, ai_mode="local", ollama_model="qwen3:4b", remember_chat=True)
+        with patch.object(self.app.service.ollama, "request", return_value={"content": "민수님 반가워요", "calls": []}):
+            self.app.service.execute("내 이름은 민수야")
+        self.app.close()
+        self.root = tk.Tk()
+        self.app = LunaApp(self.root, self.temp.name, voice=self.voice, load_voices=False)
+        self.root.update()
+        self.assertIn("내 이름은 민수야", self.app.chat.get("1.0", "end"))
+        self.assertIn("민수님 반가워요", self.app.chat.get("1.0", "end"))
+        with patch("assistant.app.messagebox.askyesno", return_value=True):
+            self.assertTrue(self.app.new_conversation())
+        self.assertEqual(self.app.service.history.messages(), [])
+        self.assertNotIn("민수", self.app.chat.get("1.0", "end"))
 
 
 if __name__ == "__main__":
