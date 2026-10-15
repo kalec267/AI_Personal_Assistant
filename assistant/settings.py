@@ -1,7 +1,14 @@
 import json
+import math
 import os
 import uuid
 from pathlib import Path
+
+
+def check_voice_speed(value):
+    if type(value) not in (int, float) or not math.isfinite(value) or not 0.5 <= value <= 2.0:
+        raise ValueError("음성 출력 속도는 0.5~2.0배로 설정하세요.")
+    return round(float(value), 2)
 
 
 def default_data_dir():
@@ -17,6 +24,11 @@ def load_settings(folder):
             return {}
         result = {"voice": data.get("voice", "") if isinstance(data.get("voice"), str) else "",
                   "speak": data.get("speak", True) if isinstance(data.get("speak", True), bool) else True}
+        if "voice_speed" in data:
+            try:
+                result["voice_speed"] = check_voice_speed(data["voice_speed"])
+            except ValueError:
+                pass
         if data.get("ai_mode") in ("off", "local", "cloud"):
             result["ai_mode"] = data["ai_mode"]
         if isinstance(data.get("ollama_model"), str):
@@ -40,13 +52,15 @@ def load_settings(folder):
 
 def save_settings(folder, voice, speak, *, ai_mode=None, ollama_model=None, remember_chat=None,
                   history_turns=None, volume=None, apply_volume_on_start=None, windows_control=None,
-                  vision_model=None, search_provider=None, search_kind=None):
+                  vision_model=None, search_provider=None, search_kind=None, voice_speed=None):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     temporary = folder / f"settings-{uuid.uuid4().hex}.tmp"
     try:
         data = load_settings(folder)
         data.update(voice=voice, speak=bool(speak))
+        if voice_speed is not None:
+            data["voice_speed"] = check_voice_speed(voice_speed)
         if ai_mode is not None:
             if ai_mode not in {"off", "local", "cloud"}:
                 raise ValueError("Invalid AI mode")

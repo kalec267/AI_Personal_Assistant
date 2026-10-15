@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import ttk
+from .theme import PAPER, SURFACE, INK
 
 
 class AttachmentDialog(tk.Toplevel):
@@ -7,6 +8,7 @@ class AttachmentDialog(tk.Toplevel):
         super().__init__(app.root)
         self.app = app
         self.title("LUNA · 첨부 자료")
+        self.configure(bg=PAPER)
         self.geometry("700x460")
         self.minsize(600, 400)
         self.transient(app.root)
@@ -24,7 +26,8 @@ class AttachmentDialog(tk.Toplevel):
         self.items.column("name", width=320)
         self.items.column("type", width=180)
         self.items.pack(fill="x", pady=8)
-        self.preview = tk.Text(content, height=7, wrap="word", state="disabled", font=("Malgun Gothic", 10))
+        self.preview = tk.Text(content, height=7, wrap="word", state="disabled", font=("Malgun Gothic", 10),
+                               bg=SURFACE, fg=INK, relief="flat", padx=12, pady=12)
         self.preview.pack(fill="both", expand=True)
         self.items.bind("<<TreeviewSelect>>", self.select)
         self.protocol("WM_DELETE_WINDOW", self.close)

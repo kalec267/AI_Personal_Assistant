@@ -14,10 +14,19 @@ from assistant.app import LunaApp
 from assistant.core import UserError
 from assistant.service import AssistantService
 from assistant.settings import load_settings, save_settings
-from assistant.voice import WindowsVoice, preferred_voice, recognize_once
+from assistant.voice import WindowsVoice, VoiceRouter, preferred_voice, recognize_once
 
 
 class ServiceTests(unittest.TestCase):
+    def test_context_reset_cancels_pending_spoken_calendar_save(self):
+        with tempfile.TemporaryDirectory() as folder:
+            service = AssistantService(folder)
+            draft = service.execute("내일 오후 3시 팀 회의 일정 추가")
+            service.clear_conversation()
+            with self.assertRaisesRegex(UserError, "자동 저장을 취소"):
+                service.save_draft(draft["draft"], generation=draft["history_generation"])
+            self.assertEqual(service.calendar.list(), [])
+
     def test_native_command_flow_without_http(self):
         with tempfile.TemporaryDirectory() as folder:
             service = AssistantService(folder)
@@ -45,8 +54,31 @@ class SettingsTests(unittest.TestCase):
             (Path(folder) / "settings.json").write_text("not json")
             self.assertEqual(load_settings(folder), {})
 
+    def test_speed_persists_and_invalid_speed_does_not_remove_other_preferences(self):
+        with tempfile.TemporaryDirectory() as folder:
+            save_settings(folder, "local:F2", True, voice_speed=1.35, ai_mode="local")
+            self.assertEqual(load_settings(folder)["voice_speed"], 1.35)
+            for invalid in (True, "1.2", 0.49, 2.01, float("nan"), float("inf")):
+                with self.subTest(value=invalid), self.assertRaises(ValueError):
+                    save_settings(folder, "local:F2", True, voice_speed=invalid)
+            data = load_settings(folder)
+            data["voice_speed"] = "invalid"
+            (Path(folder) / "settings.json").write_text(json.dumps(data), encoding="utf-8")
+            result = load_settings(folder)
+            self.assertNotIn("voice_speed", result)
+            self.assertEqual(result["ai_mode"], "local")
+
 
 class VoiceTests(unittest.TestCase):
+    def test_speed_reaches_both_voice_backends(self):
+        with tempfile.TemporaryDirectory() as folder:
+            router = VoiceRouter(folder)
+            with patch.object(router, "stop"), patch.object(router.local, "speak") as local, patch.object(router.windows, "speak") as windows:
+                router.speak("테스트", "local:F2", speed=0.8)
+                local.assert_called_once_with("테스트", "local:F2", speed=0.8)
+                router.speak("테스트", "한국어 여성", speed=1.6)
+                windows.assert_called_once_with("테스트", "한국어 여성", speed=1.6)
+
     def test_real_gender_metadata_is_used_for_default(self):
         voices = [{"name": "Male Korean", "culture": "ko-KR", "gender": "Male"},
                   {"name": "Female English", "culture": "en-US", "gender": "Female"},
@@ -69,7 +101,7 @@ class VoiceTests(unittest.TestCase):
             process = popen.return_value
             process.returncode = 0
             driver.speak(text, "여성 음성")
-            self.assertEqual(json.loads(process.communicate.call_args.args[0]), {"text": text, "voice": "여성 음성"})
+            self.assertEqual(json.loads(process.communicate.call_args.args[0]), {"text": text, "voice": "여성 음성", "speed": 1.0})
             self.assertNotIn(text, popen.call_args.args[0])
             self.assertFalse(popen.call_args.kwargs.get("shell", False))
 
@@ -160,12 +192,77 @@ class NativeUITests(unittest.TestCase):
             self.app.delete_event()
         self.assertEqual(self.app.service.calendar.list(), [])
 
-    def test_voice_recognition_fills_entry_without_launching(self):
-        with patch("assistant.desktop.launch") as launch:
+    def test_voice_recognition_executes_once_without_enter_or_confirmation(self):
+        with patch("assistant.desktop.launch", return_value="메모장 실행 완료") as launch, patch("assistant.app.messagebox.askyesno", side_effect=AssertionError("no recognition confirmation")):
             self.app.listen()
-            self.wait_for(lambda: not self.app.listening)
-            self.assertEqual(self.app.command_var.get(), "메모장 실행")
-            launch.assert_not_called()
+            self.wait_for(lambda: not self.app.listening and not self.app.command_busy)
+            self.assertEqual(self.app.command_var.get(), "")
+            launch.assert_called_once_with("notepad")
+            self.assertIn("메모장 실행 완료", self.app.chat.get("1.0", "end"))
+
+    def test_spoken_calendar_saves_without_form_and_ambiguous_time_does_not_save(self):
+        self.app.recognizer = lambda: "내일 오후 3시 팀 회의 일정 추가"
+        with patch.object(self.app, "open_event", side_effect=AssertionError("no manual form for complete spoken event")):
+            self.app.listen()
+            self.wait_for(lambda: not self.app.listening and not self.app.command_busy)
+        self.assertEqual(len(self.app.service.calendar.list()), 1)
+        self.assertEqual(self.app.service.calendar.list()[0]["title"], "팀 회의")
+        self.app.recognizer = lambda: "내일 3시 다른 회의 일정 추가"
+        self.app.listen()
+        self.wait_for(lambda: not self.app.listening and not self.app.command_busy)
+        self.assertEqual(len(self.app.service.calendar.list()), 1)
+        self.assertIn("오전인지 오후", self.app.status_var.get())
+
+    def test_voice_ai_actions_execute_without_proposal_acknowledgement(self):
+        self.app.recognizer = lambda: "메모장 켜고 볼륨을 25퍼센트로 설정해 줘"
+        save_settings(self.temp.name, "여성 음성", True, ai_mode="local", ollama_model="qwen3:4b", voice_speed=1.2)
+        self.app.apply_settings()
+        calls = [{"function": {"name": "launch_program", "arguments": {"app_id": "notepad"}}},
+                 {"function": {"name": "set_volume", "arguments": {"mode": "set", "value": 25}}}]
+        with patch.object(self.app.service.ollama, "request", return_value={"content": "", "calls": calls}), patch("assistant.desktop.launch", return_value="메모장 실행 완료") as launch, patch("assistant.desktop.volume", return_value="볼륨 25퍼센트") as volume, patch.object(self.app, "confirm_actions", side_effect=AssertionError("no extra confirmation")):
+            self.app.listen()
+            self.wait_for(lambda: not self.app.listening and not self.app.command_busy and self.voice.speak.called)
+            launch.assert_called_once_with("notepad")
+            volume.assert_called_once_with("set", 25)
+            self.voice.speak.assert_called_once_with("메모장 실행 완료\n볼륨 25퍼센트", "여성 음성", speed=1.2)
+            self.assertNotIn("다음 동작을 제안", self.app.chat.get("1.0", "end"))
+
+    def test_voice_windows_command_still_requires_command_review(self):
+        self.app.recognizer = lambda: "Windows의 현재 시간 확인해 줘"
+        save_settings(self.temp.name, "", False, ai_mode="local", ollama_model="qwen3:4b", windows_control=True)
+        calls = [{"function": {"name": "run_windows_command", "arguments": {"command": "Get-Date", "description": "현재 시간 확인"}}}]
+        with patch.object(self.app.service.ollama, "request", return_value={"content": "", "calls": calls}), patch.object(self.app, "confirm_actions", return_value=False) as confirm, patch("assistant.windows_control.run_command") as run:
+            self.app.listen()
+            self.wait_for(lambda: not self.app.listening and not self.app.command_busy)
+            confirm.assert_called_once()
+            self.assertFalse(confirm.call_args.args[0]["voice_auto"])
+            run.assert_not_called()
+            self.assertFalse(self.app.voice_command)
+
+    def test_empty_or_failed_recognition_never_executes_and_restores_buttons(self):
+        for recognizer in (lambda: "  ", MagicMock(side_effect=UserError("인식 실패"))):
+            self.app.recognizer = recognizer
+            with patch.object(self.app.service, "execute") as execute:
+                self.app.listen()
+                self.wait_for(lambda: not self.app.listening)
+                execute.assert_not_called()
+                self.assertEqual(str(self.app.send_button.cget("state")), "normal")
+                self.assertEqual(str(self.app.mic_button.cget("state")), "normal")
+
+    def test_repeated_mic_and_enter_during_recognition_cannot_duplicate_commands(self):
+        release = threading.Event()
+        def recognize():
+            release.wait(3)
+            return "메모장 실행"
+        self.app.recognizer = MagicMock(side_effect=recognize)
+        with patch("assistant.desktop.launch", return_value="실행 완료") as launch:
+            self.app.listen()
+            self.app.listen()
+            self.app.submit("계산기 실행")
+            release.set()
+            self.wait_for(lambda: not self.app.listening and not self.app.command_busy)
+            self.app.recognizer.assert_called_once()
+            launch.assert_called_once_with("notepad")
 
     def test_validation_and_worker_error_recovery(self):
         self.app.open_event()
@@ -189,7 +286,7 @@ class NativeUITests(unittest.TestCase):
         self.assertEqual(load_settings(self.temp.name)["voice"], "여성 음성")
         self.app.say("테스트", force=True)
         self.wait_for(lambda: self.voice.speak.called)
-        self.voice.speak.assert_called_with("테스트", "여성 음성")
+        self.voice.speak.assert_called_with("테스트", "여성 음성", speed=1.0)
 
     def test_close_with_pending_job_discards_ui_callbacks(self):
         ready, release, done = threading.Event(), threading.Event(), threading.Event()
@@ -299,6 +396,7 @@ class NativeUITests(unittest.TestCase):
         dialog.vision_model.set("gemma3:4b")
         dialog.voice_var.set("local:F4")
         dialog.speak.set(False)
+        dialog.voice_speed.set(1.4)
         dialog.volume.set(42.8)
         dialog.start_volume.set(True)
         dialog.remember.set(True)
@@ -318,6 +416,7 @@ class NativeUITests(unittest.TestCase):
             self.root.update()
         self.assertEqual(self.app.selected_voice(), "local:F4")
         self.assertFalse(self.app.speak_var.get())
+        self.assertEqual(self.app.voice_speed, 1.4)
         self.app.open_config()
         restored = self.app.config_dialog
         self.assertEqual(restored.volume.get(), 43)
@@ -326,7 +425,25 @@ class NativeUITests(unittest.TestCase):
         self.assertEqual(restored.history_turns.get(), 4)
         self.assertTrue(restored.windows_access.get())
         self.assertEqual(restored.vision_model.get(), "gemma3:4b")
+        self.assertEqual(restored.voice_speed.get(), 1.4)
         restored.close()
+
+    def test_voice_preview_uses_unsaved_speed_and_save_applies_it(self):
+        self.app._voices_loaded([{"name": "local:F2", "culture": "ko-KR", "gender": "Female"}])
+        self.app.open_config()
+        dialog = self.app.config_dialog
+        dialog.voice_speed.set(1.65)
+        dialog.test_voice()
+        self.wait_for(lambda: self.voice.speak.called)
+        self.assertEqual(self.voice.speak.call_args.kwargs["speed"], 1.65)
+        self.assertNotIn("voice_speed", load_settings(self.temp.name))
+        dialog.reset_speed()
+        self.assertEqual(dialog.voice_speed.get(), 1.0)
+        dialog.voice_speed.set(0.8)
+        self.assertTrue(dialog.save())
+        self.assertEqual(self.app.voice_speed, 0.8)
+        self.assertEqual(load_settings(self.temp.name)["voice_speed"], 0.8)
+        dialog.close()
 
     def test_attach_real_document_summarize_follow_up_and_clear(self):
         path = Path(self.temp.name) / "실적.txt"

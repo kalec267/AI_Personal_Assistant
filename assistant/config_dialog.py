@@ -8,6 +8,7 @@ from tkinter import filedialog, ttk
 from . import desktop, windows_control
 from .core import UserError
 from .settings import load_settings, save_settings
+from .theme import PAPER, BLUE, MUTED
 
 MODES = {"기본 명령 (AI 끔)": "off", "Ollama 로컬 · API 키 불필요": "local", "Ollama 클라우드 · API 키 필요": "cloud"}
 
@@ -15,7 +16,7 @@ MODES = {"기본 명령 (AI 끔)": "off", "Ollama 로컬 · API 키 불필요": 
 class SettingsPage(ttk.Frame):
     def __init__(self, parent):
         super().__init__(parent)
-        canvas = tk.Canvas(self, highlightthickness=0, background="#f2f3f6")
+        canvas = tk.Canvas(self, highlightthickness=0, background=PAPER)
         scroll = ttk.Scrollbar(self, command=canvas.yview)
         canvas.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
@@ -31,6 +32,7 @@ class ConfigDialog(tk.Toplevel):
         super().__init__(app.root)
         self.app = app
         self.title("LUNA · 설정")
+        self.configure(bg=PAPER)
         self.geometry("720x720")
         self.minsize(660, 600)
         self.transient(app.root)
@@ -43,6 +45,8 @@ class ConfigDialog(tk.Toplevel):
         self.remember = tk.BooleanVar(value=options.get("remember_chat", False))
         self.history_turns = tk.IntVar(value=options.get("history_turns", 10))
         self.speak = tk.BooleanVar(value=app.speak_var.get())
+        self.voice_speed = tk.DoubleVar(value=options.get("voice_speed", 1.0))
+        self.speed_label = tk.StringVar(value=f"{self.voice_speed.get():.2f}배")
         self.voice_var = tk.StringVar(value=app.selected_voice())
         self.volume = tk.DoubleVar(value=options.get("volume", 30))
         self.volume_label = tk.StringVar(value=f"{round(self.volume.get())}%")
@@ -61,7 +65,7 @@ class ConfigDialog(tk.Toplevel):
         buttons = ttk.Frame(footer)
         buttons.pack(fill="x")
         ttk.Button(buttons, text="닫기", command=self.close).pack(side="right")
-        self.save_button = ttk.Button(buttons, text="설정 저장", command=self.save)
+        self.save_button = ttk.Button(buttons, text="설정 저장", command=self.save, style="Accent.TButton")
         self.save_button.pack(side="right", padx=8)
         ttk.Label(buttons, text="저장한 사용자 설정은 재실행 후에도 유지됩니다.").pack(side="left")
         ttk.Label(footer, textvariable=self.save_feedback, wraplength=640).pack(anchor="w", pady=(7, 0))
@@ -132,6 +136,14 @@ class ConfigDialog(tk.Toplevel):
         ttk.Label(frame, text="목소리 · local:F1~F5는 한국어 여성 음성").pack(anchor="w")
         self.voice_combo = ttk.Combobox(frame, textvariable=self.voice_var, state="readonly")
         self.voice_combo.pack(fill="x", pady=8)
+        ttk.Label(frame, text="음성 출력 속도").pack(anchor="w", pady=(8, 0))
+        speed_row = ttk.Frame(frame)
+        speed_row.pack(fill="x", pady=8)
+        self.speed_scale = ttk.Scale(speed_row, from_=0.5, to=2.0, variable=self.voice_speed, command=self.speed_changed)
+        self.speed_scale.pack(side="left", fill="x", expand=True)
+        ttk.Label(speed_row, textvariable=self.speed_label, width=8, foreground=BLUE, font=("Malgun Gothic", 11, "bold")).pack(side="left", padx=10)
+        ttk.Button(speed_row, text="기본 속도", command=self.reset_speed).pack(side="right")
+        ttk.Label(frame, text="0.5배 느리게 · 1.0배 기본 · 2.0배 빠르게\n미리 듣기로 확인하고 저장하면 다음 답변부터 적용됩니다.\nWindows 설치 음성은 가까운 속도 단계로 적용됩니다.", wraplength=580, foreground=MUTED).pack(anchor="w", pady=(0, 10))
         row = ttk.Frame(frame)
         row.pack(fill="x")
         ttk.Button(row, text="목소리 들어보기", command=self.test_voice).pack(side="left")
@@ -230,6 +242,9 @@ class ConfigDialog(tk.Toplevel):
             if vision_model and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:-]{0,119}", vision_model):
                 raise UserError("이미지 분석 모델 이름을 확인하세요.")
             turns, volume = self.history_turns.get(), round(self.volume.get())
+            speed = round(self.voice_speed.get(), 2)
+            if not 0.5 <= speed <= 2.0:
+                raise UserError("음성 출력 속도는 0.5~2.0배로 설정하세요.")
             if not 1 <= turns <= 20 or not 0 <= volume <= 100:
                 raise UserError("최근 대화 수는 1~20, 볼륨은 0~100으로 설정하세요.")
             if self.key.get().strip():
@@ -237,11 +252,12 @@ class ConfigDialog(tk.Toplevel):
                 self.key.set("")
             save_settings(self.app.data_dir, self.voice_var.get(), self.speak.get(), ai_mode=MODES[self.mode.get()],
                           ollama_model=model, remember_chat=self.remember.get(), history_turns=turns,
-                          volume=volume, apply_volume_on_start=self.start_volume.get(), windows_control=self.windows_access.get(), vision_model=vision_model)
+                          volume=volume, apply_volume_on_start=self.start_volume.get(), windows_control=self.windows_access.get(), vision_model=vision_model,
+                          voice_speed=speed)
             self.app.apply_settings()
             self.feedback.set("사용자 설정 저장 완료 · " + self.app.service.credentials.status())
             self.save_feedback.set("사용자 설정을 저장했어요. 재실행 후에도 유지됩니다.")
-            self.sound_feedback.set("목소리·답변 읽기·볼륨 기본값을 저장했어요.")
+            self.sound_feedback.set("목소리·출력 속도·답변 읽기·볼륨 기본값을 저장했어요.")
             return True
         except (UserError, OSError, ValueError, tk.TclError) as error:
             message = str(error) if isinstance(error, UserError) else "설정을 저장하지 못했어요. 입력값과 데이터 폴더 권한을 확인하세요."
@@ -316,7 +332,14 @@ class ConfigDialog(tk.Toplevel):
         self.install_voice_button.configure(state="disabled" if self.app.installing_voice else "normal")
 
     def test_voice(self):
-        self.app.say("안녕하세요. 당신의 개인 비서 루나예요.", force=True, name=self.voice_var.get())
+        self.app.say("안녕하세요. 당신의 개인 비서 루나예요.", force=True, name=self.voice_var.get(), speed=round(self.voice_speed.get(), 2))
+
+    def speed_changed(self, value):
+        self.speed_label.set(f"{float(value):.2f}배")
+
+    def reset_speed(self):
+        self.voice_speed.set(1.0)
+        self.speed_changed(1.0)
 
     def apply_volume(self):
         self.sound_command("set", round(self.volume.get()))

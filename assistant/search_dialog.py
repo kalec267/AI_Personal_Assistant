@@ -5,6 +5,7 @@ from tkinter import ttk
 from .core import UserError
 from .search import KINDS, PROVIDERS, open_search, search_spec
 from .settings import load_settings, save_settings
+from .theme import PAPER
 
 
 class SearchDialog(tk.Toplevel):
@@ -12,6 +13,7 @@ class SearchDialog(tk.Toplevel):
         super().__init__(app.root)
         self.app = app
         self.title("LUNA · 뉴스·동영상 검색")
+        self.configure(bg=PAPER)
         self.geometry("640x370")
         self.minsize(600, 370)
         self.transient(app.root)
@@ -31,7 +33,7 @@ class SearchDialog(tk.Toplevel):
         row.pack(fill="x", pady=14)
         ttk.Combobox(row, textvariable=self.provider, values=list(PROVIDERS.values()), state="readonly", width=10).pack(side="left")
         ttk.Combobox(row, textvariable=self.kind, values=list(KINDS.values()), state="readonly", width=10).pack(side="left", padx=10)
-        self.search_button = ttk.Button(row, text="검색 결과 열기", command=self.search)
+        self.search_button = ttk.Button(row, text="검색 결과 열기", command=self.search, style="Accent.TButton")
         self.search_button.pack(side="right")
         ttk.Label(content, text="선택한 검색 서비스·종류를 다음 실행에도 기억합니다.\n검색어는 선택한 서비스에 전송됩니다.", wraplength=580).pack(anchor="w", pady=4)
         ttk.Entry(content, textvariable=self.url, state="readonly").pack(fill="x", pady=10)

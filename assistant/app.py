@@ -19,8 +19,7 @@ from .config_dialog import ConfigDialog
 from .local_voice import install_model, MODEL_NAME, MODEL_FILES
 from .settings import default_data_dir, load_settings, save_settings
 from .voice import VoiceRouter, preferred_voice, recognize_once
-
-BG, PAPER, INK, MUTED, BLUE, LINE = "#f4f6fb", "#ffffff", "#253047", "#7b879e", "#526de0", "#e5eaf3"
+from .theme import BG, PAPER, INK, MUTED, BLUE, LINE, SURFACE, TINT, apply_theme
 
 
 class EventDialog(tk.Toplevel):
@@ -87,6 +86,7 @@ class LunaApp:
         self.next_job = 0
         self.closed = False
         self.command_busy = False
+        self.voice_command = False
         self.listening = False
         self.voice_items = []
         self.installing_voice = False
@@ -104,6 +104,7 @@ class LunaApp:
         self.voice_var = tk.StringVar(value=self.settings.get("voice", ""))
         self.voice_note = tk.StringVar(value="Windows 음성 목록을 불러오는 중…")
         self.speak_var = tk.BooleanVar(value=self.settings.get("speak", True))
+        self.voice_speed = self.settings.get("voice_speed", 1.0)
         self.root.title("LUNA · 나만의 개인 비서")
         self.root.geometry("1180x760")
         self.root.minsize(960, 620)
@@ -131,18 +132,14 @@ class LunaApp:
 
     @staticmethod
     def button(parent, text, command, primary=False):
-        return tk.Button(parent, text=text, command=command, bg=BLUE if primary else "#f0f3fc", fg="white" if primary else "#566a9c",
-                         activebackground="#435bc5" if primary else "#e5ebfb", activeforeground="white" if primary else INK,
-                         relief="flat", bd=0, padx=13, pady=9, cursor="hand2", font=("Malgun Gothic", 10), takefocus=True)
+        return tk.Button(parent, text=text, command=command, bg=BLUE if primary else SURFACE, fg="white" if primary else BLUE,
+                         activebackground="#5945c9" if primary else TINT, activeforeground="white" if primary else BLUE,
+                         disabledforeground="#a1a8bb", relief="flat", bd=0, padx=13, pady=9,
+                         highlightthickness=1, highlightbackground=BLUE if primary else SURFACE, highlightcolor=BLUE,
+                         cursor="hand2", font=("Malgun Gothic", 10, "bold" if primary else "normal"), takefocus=True)
 
     def _style(self):
-        style = ttk.Style(self.root)
-        style.theme_use("clam")
-        style.configure("TEntry", fieldbackground=PAPER, padding=6, bordercolor=LINE, lightcolor=LINE, darkcolor=LINE)
-        style.configure("TCombobox", padding=5, fieldbackground=PAPER, background=BG)
-        style.configure("Treeview", background=PAPER, fieldbackground=PAPER, foreground=INK, rowheight=37, borderwidth=0, font=("Malgun Gothic", 10))
-        style.configure("Treeview.Heading", background="#f1f4fa", foreground=MUTED, font=("Malgun Gothic", 9), padding=8, relief="flat")
-        style.map("Treeview", background=[("selected", "#e5eaff")], foreground=[("selected", "#344caa")])
+        apply_theme(self.root)
 
     def panel(self, parent, index, title):
         frame = tk.Frame(parent, bg=PAPER, padx=20, pady=17, highlightbackground=LINE, highlightcolor=LINE, highlightthickness=1)
@@ -175,12 +172,13 @@ class LunaApp:
         transcript = tk.Frame(left, bg=PAPER, height=1)
         transcript.pack_propagate(False)
         transcript.pack(fill="both", expand=True)
-        self.chat = tk.Text(transcript, bg="#f7f8fc", fg=INK, relief="flat", bd=0, wrap="word", font=("Malgun Gothic", 11), padx=15, pady=12, height=4, state="disabled")
+        self.chat = tk.Text(transcript, bg=SURFACE, fg=INK, relief="flat", bd=0, wrap="word", font=("Malgun Gothic", 11), padx=18, pady=14, height=4, state="disabled")
         scroll = ttk.Scrollbar(transcript, command=self.chat.yview)
         self.chat.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
         self.chat.pack(side="left", fill="both", expand=True)
-        self.chat.tag_configure("루나", foreground=BLUE)
+        self.chat.tag_configure("루나", foreground=BLUE, font=("Malgun Gothic", 10, "bold"), spacing3=5)
+        self.chat.tag_configure("나", foreground=MUTED, font=("Malgun Gothic", 10, "bold"), spacing3=5)
         self.chat.tag_configure("오류", foreground="#b04b65")
         suggestions = tk.Frame(left, bg=PAPER)
         suggestions.pack(fill="x", pady=10)
@@ -207,7 +205,7 @@ class LunaApp:
         self.mic_button.pack(side="left", padx=6)
         self.send_button = self.button(input_row, "보내기", self.submit, primary=True)
         self.send_button.pack(side="left")
-        note = self.label(left, "마이크: Google 음성 서비스에 오디오 전송.\nOllama 클라우드: 첨부에서 읽은 내용·이미지도 전송됩니다.", size=8, color=MUTED)
+        note = self.label(left, "음성 인식 후 바로 실행 · Google에 음성 전송\nOllama 클라우드 사용 시 첨부 내용·이미지도 전송됩니다.", size=8, color=MUTED)
         note.configure(wraplength=470)
         note.pack(anchor="w", pady=(9, 0))
         self.privacy_note = note
@@ -235,6 +233,10 @@ class LunaApp:
         self.tree.configure(yscrollcommand=tree_scroll.set)
         self.tree.pack(side="left", fill="both", expand=True)
         tree_scroll.pack(side="right", fill="y")
+        self.calendar_empty = tk.Frame(tree_area, bg=PAPER, padx=12, pady=12)
+        self.label(self.calendar_empty, "✦", size=24, color="#c6b8f6").pack(anchor="center")
+        self.label(self.calendar_empty, "가볍게 시작하는 하루", size=11, bold=True).pack(anchor="center", pady=(8, 5))
+        self.label(self.calendar_empty, "새로운 일정을 추가해 보세요.", size=9, color=MUTED).pack(anchor="center")
         self.event_detail = tk.StringVar(value="일정을 선택하면 종료 시간을 볼 수 있어요.")
         detail_label = tk.Label(schedule, textvariable=self.event_detail, bg=PAPER, fg=MUTED, font=("Malgun Gothic", 9), wraplength=360, justify="left", anchor="w")
         self.tree.bind("<<TreeviewSelect>>", self._event_selected)
@@ -255,7 +257,7 @@ class LunaApp:
         canvas.delete("all")
         x, y = event.width / 2, event.height / 2
         outer = min(30, max(10, y - 2))
-        for radius, color in [(outer, "#eef1ff"), (outer * .8, "#dce3ff"), (outer * .6, "#bdccfc")]:
+        for radius, color in [(outer, "#f3f0ff"), (outer * .8, "#e5ddff"), (outer * .6, "#b7a5f4")]:
             canvas.create_oval(x-radius, y-radius, x+radius, y+radius, fill=color, outline="")
         canvas.create_text(x, y, text="✦", fill="white", font=("Segoe UI", max(12, round(outer * .73))))
 
@@ -308,6 +310,7 @@ class LunaApp:
         changed = self.service.sync_settings(self.settings)
         self.speak_var.set(self.settings.get("speak", True))
         self.voice_var.set(self.settings.get("voice", ""))
+        self.voice_speed = self.settings.get("voice_speed", 1.0)
         self.mode_var.set({"off": "기본 명령", "local": "Ollama 로컬", "cloud": "Ollama 클라우드"}.get(self.settings.get("ai_mode", "off"), "기본 명령") + " · 데스크톱")
         if not self.speak_var.get():
             self.voice.stop()
@@ -366,46 +369,68 @@ class LunaApp:
         self.status_var.set(str(error).splitlines()[0][:160] if str(error) else "처리 중 오류가 발생했어요.")
         self.append_message("오류", str(error))
 
-    def submit(self, text=None):
-        if self.command_busy:
+    def submit(self, text=None, *, from_voice=False):
+        if self.command_busy or self.listening:
             return
         text = (self.command_var.get() if text is None else text).strip()
         if not text:
             return
         self.command_busy = True
+        self.voice_command = from_voice
         self.command_var.set("")
         self.send_button.configure(state="disabled")
+        self.mic_button.configure(state="disabled")
         self.append_message("나", text)
         self.status_var.set("부탁하신 내용을 확인하고 있어요…")
         self.run_task(functools.partial(self.service.execute, text, attachments=tuple(self.attachments), progress=self.analysis_progress.put), self._command_done, self._command_failed)
 
     def _command_failed(self, error):
         self.command_busy = False
+        self.voice_command = False
         self.send_button.configure(state="normal")
+        self.mic_button.configure(state="normal")
         self.show_error(error)
 
     def _command_done(self, result):
+        proposal = result.get("proposal")
+        if proposal and self.voice_command and proposal.get("voice_auto", False) and not proposal.get("windows_command"):
+            # The spoken request authorizes ordinary app, sound and search actions.
+            # Execute the existing validated, one-use proposal without another prompt.
+            self.status_var.set("음성 명령을 실행하고 있어요…")
+            self.run_task(functools.partial(self.service.confirm_proposal, proposal["id"]), self._command_done, self._command_failed)
+            return
+        if result.get("draft") and self.voice_command:
+            self.status_var.set("말씀하신 일정을 저장하고 있어요…")
+            self.run_task(functools.partial(self.service.save_draft, result["draft"], result.get("history_turn"), generation=result.get("history_generation")), self._command_done, self._command_failed)
+            return
         self.command_busy = False
         self.send_button.configure(state="normal")
+        self.mic_button.configure(state="normal")
         self.status_var.set(self.service.history.warning or "준비됐어요. 무엇을 도와드릴까요?")
         self.append_message("루나", result["message"])
         self.say(result["message"])
+        if result.get("saved_event"):
+            self.day_var.set(result["saved_event"]["start"][:10])
+            self.refresh_events()
         if result.get("open_settings"):
             self.open_config()
         if result.get("search"):
             self.open_search(result["search"])
         if result.get("draft"):
             self.open_event(result["draft"], result.get("history_turn"))
-        if result.get("proposal"):
-            proposal = result["proposal"]
+        if proposal:
             if self.confirm_actions(proposal):
                 self.command_busy = True
                 self.send_button.configure(state="disabled")
+                self.mic_button.configure(state="disabled")
                 self.status_var.set("확인한 동작을 실행하고 있어요…")
                 self.run_task(functools.partial(self.service.confirm_proposal, proposal["id"]), self._command_done, self._command_failed)
             else:
                 self.service.discard_proposal(proposal["id"])
                 self.append_message("루나", "취소했어요. 제안된 동작은 실행하지 않았습니다.")
+                self.voice_command = False
+        else:
+            self.voice_command = False
 
     def confirm_actions(self, proposal):
         if proposal.get("windows_command"):
@@ -515,6 +540,10 @@ class LunaApp:
         for event in events:
             self.tree.insert("", "end", iid=event["id"], values=(event["start"][11:], event["title"]))
         self.event_detail.set(f"일정 {len(events)}개 · 선택하면 전체 시간을 볼 수 있어요." if events else "이 날은 저장된 일정이 없어요. + 일정으로 추가해 보세요.")
+        if events:
+            self.calendar_empty.place_forget()
+        else:
+            self.calendar_empty.place(relx=.48, rely=.45, anchor="center")
 
     def shift_day(self, offset):
         try:
@@ -556,24 +585,28 @@ class LunaApp:
                 self.show_error(UserError("파일을 저장할 수 없어요. 폴더의 쓰기 권한을 확인해 주세요."))
 
     def listen(self):
-        if self.listening:
+        if self.listening or self.command_busy:
             return
         self.listening = True
         self.voice.stop()
         self.mic_button.configure(state="disabled", text="듣는 중…")
+        self.send_button.configure(state="disabled")
         self.status_var.set("주변 소음 확인 후 듣습니다. 잠시 뒤 말씀해 주세요. 최대 10초 동안 인식해요.")
         self.run_task(self.recognizer, self._heard, self._listen_failed)
 
     def _heard(self, text):
         self.listening = False
         self.mic_button.configure(state="normal", text="마이크")
-        self.command_var.set(text)
-        self.entry.focus_set()
-        self.status_var.set("인식한 내용을 확인하고 보내기 버튼을 눌러 주세요.")
+        self.send_button.configure(state="normal")
+        if not isinstance(text, str) or not text.strip():
+            self.show_error(UserError("인식된 명령이 없어요. 다시 말씀해 주세요."))
+            return
+        self.submit(text.strip(), from_voice=True)
 
     def _listen_failed(self, error):
         self.listening = False
         self.mic_button.configure(state="normal", text="마이크")
+        self.send_button.configure(state="normal")
         self.show_error(error)
 
     def _voices_loaded(self, voices):
@@ -638,7 +671,7 @@ class LunaApp:
         if not self.speak_var.get():
             self.voice.stop()
 
-    def say(self, text, force=False, name=None):
+    def say(self, text, force=False, name=None, speed=None):
         if not force and not self.speak_var.get():
             return
         name = self.selected_voice() if name is None else name
@@ -648,7 +681,8 @@ class LunaApp:
             return
         if self.listening:
             return
-        self.run_task(functools.partial(self.voice.speak, text, name), lambda _value: None, lambda error: self.voice_note.set(str(error)))
+        speed = self.voice_speed if speed is None else speed
+        self.run_task(functools.partial(self.voice.speak, text, name, speed=speed), lambda _value: None, lambda error: self.voice_note.set(str(error)))
 
     def close(self):
         if self.closed:

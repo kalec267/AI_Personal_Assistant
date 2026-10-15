@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .core import UserError
 from .local_voice import LocalVoice
+from .settings import check_voice_speed
 
 
 def preferred_voice(voices, saved=""):
@@ -57,11 +58,15 @@ class WindowsVoice:
                 self._process.terminate()
             self._process = None
 
-    def speak(self, text, name):
+    def speak(self, text, name, *, speed=1.0):
+        try:
+            speed = check_voice_speed(speed)
+        except ValueError as error:
+            raise UserError(str(error)) from None
         if not name:
             raise UserError("한국어 여성 음성을 설치하거나 사용할 음성을 직접 선택해 주세요.")
         # Both speech and voice names go through JSON stdin, never into PowerShell source.
-        payload = json.dumps({"text": str(text)[:2000], "voice": name}, ensure_ascii=False)
+        payload = json.dumps({"text": str(text)[:2000], "voice": name, "speed": speed}, ensure_ascii=False)
         try:
             with self._lock:
                 if self._closed:
@@ -102,9 +107,9 @@ class VoiceRouter:
                 pass
         return voices
 
-    def speak(self, text, name):
+    def speak(self, text, name, *, speed=1.0):
         self.stop()
-        return (self.local if name.startswith("local:") else self.windows).speak(text, name)
+        return (self.local if name.startswith("local:") else self.windows).speak(text, name, speed=speed)
 
     def stop(self):
         self.local.stop()

@@ -76,7 +76,8 @@ class AssistantService:
         intent = parse_command(text)
         action = intent["action"]
         if action == "create":
-            return {"message": "일정 초안을 만들었어요. 날짜와 시간을 확인하고 저장해 주세요. 기본 길이는 1시간이에요.", "draft": intent}
+            return {"message": "일정 초안을 만들었어요. 날짜와 시간을 확인하고 저장해 주세요. 기본 길이는 1시간이에요.", "draft": intent,
+                    "history_generation": self.history.generation}
         if action == "list":
             events = self.events_on(intent["day"]) if intent["day"] else self.calendar.list()
             message = "저장된 일정이 없어요." if not events else f"일정 {len(events)}개가 있어요. " + " / ".join(
@@ -125,6 +126,7 @@ class AssistantService:
     def _remember(self, text, result, generation, context=None):
         identifier = self.history.append(text, context or result["message"], generation)
         result["history_turn"] = identifier
+        result["history_generation"] = generation
         return result
 
     def _interpret_result(self, text, result, generation):
@@ -145,7 +147,8 @@ class AssistantService:
         summary = "\n".join(f"{i+1}. {action['summary']}" for i, action in enumerate(actions))
         reply = self._remember(text, {"message": "다음 동작을 제안했어요. 내용을 확인하고 실행해 주세요.",
                               "proposal": {"id": identifier, "summary": summary,
-                                           "windows_command": any(action["name"] == "run_windows_command" for action in actions)}}, generation,
+                                           "windows_command": any(action["name"] == "run_windows_command" for action in actions),
+                                           "voice_auto": all(action["name"] in {"launch_program", "set_volume", "open_website", "media_control", "search_web", "list_events"} for action in actions)}}, generation,
                                "동작 제안 (확인 대기, 아직 실행하지 않음): " + summary)
         self._proposals[identifier] = (now + 300, actions, reply["history_turn"])
         return reply
@@ -165,6 +168,14 @@ class AssistantService:
     def draft_saved(self, turn_id, event):
         if turn_id:
             self.history.update(turn_id, f"일정 저장 완료: {event['title']} · {event['start']} — {event['end']}")
+
+    def save_draft(self, draft, turn_id=None, *, generation=None):
+        with self._lock:
+            if generation is not None and generation != self.history.generation:
+                raise UserError("대화 설정이 변경되어 이전 음성 일정의 자동 저장을 취소했어요.")
+            event = self.calendar.add(draft["title"], draft["start"], draft["end"])
+            self.draft_saved(turn_id, event)
+        return {"message": f"일정을 저장했어요. {event['start'].replace('T', ' ')} · {event['title']}", "saved_event": event}
 
     def confirm_proposal(self, identifier):
         with self._lock:

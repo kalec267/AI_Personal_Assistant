@@ -247,8 +247,9 @@ class LocalVoiceTests(unittest.TestCase):
             module = SimpleNamespace(GenerationConfig=lambda: config)
             output = Path(folder) / "sample.wav"
             with patch("urllib.request.urlopen", side_effect=AssertionError("must stay offline")), patch.object(voice, "_engine", return_value=engine), patch("assistant.local_voice.importlib.import_module", return_value=module):
-                voice.synthesize("안녕하세요", "local:F3", output)
+                voice.synthesize("안녕하세요", "local:F3", output, speed=1.35)
             self.assertEqual(config.sid, 2)
+            self.assertEqual(config.speed, 1.35)
             self.assertEqual(config.extra["lang"], "ko")
             with wave.open(str(output)) as reader:
                 self.assertEqual(reader.getframerate(), 44100)

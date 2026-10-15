@@ -14,7 +14,7 @@ import wave
 from pathlib import Path
 
 from .core import UserError
-from .settings import default_data_dir
+from .settings import default_data_dir, check_voice_speed
 
 MODEL_NAME = "sherpa-onnx-supertonic-tts-int8-2026-03-06"
 MODEL_URL = f"https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/{MODEL_NAME}.tar.bz2"
@@ -114,7 +114,11 @@ class LocalVoice:
         self._tts = sherpa.OfflineTts(config)
         return self._tts
 
-    def synthesize(self, text, name="local:F1", filename=None):
+    def synthesize(self, text, name="local:F1", filename=None, *, speed=1.0):
+        try:
+            speed = check_voice_speed(speed)
+        except ValueError as error:
+            raise UserError(str(error)) from None
         if name not in {f"local:F{i}" for i in range(1, 6)}:
             raise UserError("지원하지 않는 로컬 음성입니다.")
         engine = self._engine()
@@ -122,7 +126,7 @@ class LocalVoice:
         config = sherpa.GenerationConfig()
         config.sid = int(name[-1]) - 1
         config.num_steps = 5
-        config.speed = 1.05
+        config.speed = speed
         config.extra["lang"] = "ko"
         audio = engine.generate(str(text)[:1000], config)
         if not len(audio.samples):
@@ -148,7 +152,7 @@ class LocalVoice:
         self._closed = True
         self.stop()
 
-    def speak(self, text, name):
+    def speak(self, text, name, *, speed=1.0):
         if os.name != "nt":
             raise UserError("앱 음성 재생은 Windows에서 지원합니다.")
         generation = self._generation
@@ -157,7 +161,7 @@ class LocalVoice:
                 return
             with tempfile.TemporaryDirectory(prefix="luna-speech-") as folder:
                 filename = Path(folder) / "speech.wav"
-                self.synthesize(text, name, filename)
+                self.synthesize(text, name, filename, speed=speed)
                 if not self._closed and generation == self._generation:
                     import winsound
                     winsound.PlaySound(str(filename), winsound.SND_FILENAME)
