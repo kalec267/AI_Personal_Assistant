@@ -1,14 +1,16 @@
 # Build on Windows to produce a Windows executable.
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_all
 
 project = Path(SPECPATH)
+voice_datas, voice_binaries, voice_imports = collect_all("sherpa_onnx")
 analysis = Analysis(
     [str(project / "launch.py")],
     pathex=[str(project)],
-    binaries=[],
+    binaries=voice_binaries,
     datas=[(str(project / "assistant" / "volume.ps1"), "assistant"),
-           (str(project / "assistant" / "speech.ps1"), "assistant")],
-    hiddenimports=["speech_recognition", "pyaudio"],
+           (str(project / "assistant" / "speech.ps1"), "assistant")] + voice_datas,
+    hiddenimports=["speech_recognition", "pyaudio", "numpy"] + voice_imports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

@@ -11,11 +11,12 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import conversation
 from .core import UserError
 from .service import AssistantService
+from .config_dialog import ConfigDialog
+from .local_voice import install_model, MODEL_NAME, MODEL_FILES
 from .settings import default_data_dir, load_settings, save_settings
-from .voice import WindowsVoice, preferred_voice, recognize_once
+from .voice import VoiceRouter, preferred_voice, recognize_once
 
 BG, PAPER, INK, MUTED, BLUE, LINE = "#f4f6fb", "#ffffff", "#253047", "#7b879e", "#526de0", "#e5eaf3"
 
@@ -68,7 +69,7 @@ class LunaApp:
         self.root = root
         self.data_dir = Path(data_dir)
         self.service = AssistantService(data_dir)
-        self.voice = voice or WindowsVoice()
+        self.voice = voice or VoiceRouter(data_dir)
         self.recognizer = recognizer
         self.settings = load_settings(data_dir)
         self.jobs = queue.Queue()
@@ -79,6 +80,8 @@ class LunaApp:
         self.listening = False
         self.voice_items = []
         self.last_dialog = None
+        self.config_dialog = None
+        self.mode_var = tk.StringVar(value={"off": "기본 명령", "local": "Ollama 로컬", "cloud": "Ollama 클라우드"}.get(self.settings.get("ai_mode", "off"), "기본 명령") + " · 데스크톱")
         self.command_var = tk.StringVar()
         self.day_var = tk.StringVar(value=dt.date.today().isoformat())
         self.status_var = tk.StringVar(value="준비됐어요. 무엇을 도와드릴까요?")
@@ -99,10 +102,10 @@ class LunaApp:
         self.refresh_events()
         self.append_message("루나", "안녕하세요. 당신의 개인 비서 루나예요. 일정을 정리하거나 PC를 제어해 보세요.")
         self._poll_id = self.root.after(60, self._poll)
-        if load_voices and os.name == "nt":
+        if load_voices:
             self.run_task(self.voice.list, self._voices_loaded, lambda error: self.voice_note.set(str(error)))
-        elif os.name != "nt":
-            self.voice_note.set("Windows에서 실행하면 설치된 여성 음성을 선택할 수 있어요.")
+        else:
+            self.voice_note.set("로컬 한국어 여성 음성 또는 Windows 설치 음성을 선택할 수 있어요.")
 
     @staticmethod
     def label(parent, text, *, size=11, color=INK, bold=False):
@@ -134,8 +137,8 @@ class LunaApp:
         header.grid(row=0, column=0, sticky="ew")
         self.label(header, "LUNA ✦", size=23, bold=True).pack(side="left")
         self.label(header, "내 일상에, 조금 더 여유를.", size=10, color=MUTED).pack(side="left", padx=22)
-        mode = "AI 대화 + 로컬 명령" if conversation.enabled() else "로컬 명령"
-        self.label(header, mode + "  ·  데스크톱", size=10, color=BLUE).pack(side="right")
+        self.button(header, "AI · 프로그램 설정", self.open_config).pack(side="right")
+        tk.Label(header, textvariable=self.mode_var, bg=BG, fg=BLUE, font=("Malgun Gothic", 9)).pack(side="right", padx=15)
         body = tk.Frame(self.root, bg=BG, padx=28)
         body.grid(row=1, column=0, sticky="nsew")
         body.columnconfigure(0, weight=3, uniform="panels")
@@ -242,7 +245,9 @@ class LunaApp:
         self.voice_combo.bind("<<ComboboxSelected>>", lambda _event: self.persist_settings())
         tk.Checkbutton(settings, text="답변 읽기", variable=self.speak_var, command=self._toggle_speech, bg=PAPER, activebackground=PAPER, fg=MUTED, selectcolor=PAPER).grid(row=0, column=2, padx=10)
         self.button(settings, "들어보기", lambda: self.say("안녕하세요. 당신의 개인 비서 루나예요.", force=True)).grid(row=0, column=3)
-        tk.Label(settings, textvariable=self.voice_note, bg=PAPER, fg=MUTED, anchor="w", justify="left", wraplength=900, font=("Malgun Gothic", 9)).grid(row=1, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        tk.Label(settings, textvariable=self.voice_note, bg=PAPER, fg=MUTED, anchor="w", justify="left", wraplength=720, font=("Malgun Gothic", 9)).grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        self.install_voice_button = self.button(settings, "로컬 음성 설치", self.install_voice)
+        self.install_voice_button.grid(row=1, column=3, pady=(8, 0))
         self.entry.focus_set()
 
     @staticmethod
@@ -327,6 +332,22 @@ class LunaApp:
         self.say(result["message"])
         if result.get("draft"):
             self.open_event(result["draft"])
+        if result.get("proposal"):
+            proposal = result["proposal"]
+            if messagebox.askyesno("AI 동작 확인", proposal["summary"] + "\n\n이 순서로 실행할까요?", parent=self.root):
+                self.command_busy = True
+                self.send_button.configure(state="disabled")
+                self.status_var.set("확인한 동작을 실행하고 있어요…")
+                self.run_task(functools.partial(self.service.confirm_proposal, proposal["id"]), self._command_done, self._command_failed)
+            else:
+                self.service.discard_proposal(proposal["id"])
+                self.append_message("루나", "취소했어요. 제안된 동작은 실행하지 않았습니다.")
+
+    def open_config(self):
+        if self.config_dialog is not None and self.config_dialog.winfo_exists():
+            self.config_dialog.lift()
+            return
+        self.config_dialog = ConfigDialog(self)
 
     def open_event(self, draft=None):
         if self.last_dialog is not None and self.last_dialog.winfo_exists():
@@ -413,9 +434,33 @@ class LunaApp:
         name = preferred_voice(voices, self.settings.get("voice", ""))
         if name:
             self.voice_combo.current(next(i for i, voice in enumerate(voices) if voice["name"] == name))
-            self.voice_note.set("Windows에 설치된 음성을 사용해요. ‘들어보기’로 확인해 주세요.")
+            self.voice_note.set(self._voice_description(name))
         else:
             self.voice_note.set("한국어 여성 음성이 없어요. Windows 한국어 음성 설치 후 앱을 다시 시작하거나 목록에서 직접 선택하세요.")
+
+    def _voice_description(self, name):
+        if name.startswith("local:"):
+            ready = all((self.data_dir / "models" / MODEL_NAME / filename).is_file() for filename in MODEL_FILES)
+            return "Supertonic 한국어 여성 음성 · 모델 설치 완료 · 오프라인 출력" if ready else "Supertonic 한국어 여성 음성 · ‘로컬 음성 설치’를 한 번 눌러 모델을 받으세요 (약 81MB)."
+        return "Windows에 설치된 음성을 사용해요. ‘들어보기’로 확인해 주세요."
+
+    def install_voice(self):
+        self.install_voice_button.configure(state="disabled")
+        self.voice_note.set("로컬 모델 다운로드·SHA-256 검증 중… 약 81MB이며 설치 후에는 오프라인으로 출력합니다.")
+        self.run_task(functools.partial(install_model, self.data_dir), self._voice_installed, self._voice_install_failed)
+
+    def _voice_installed(self, _path):
+        self.install_voice_button.configure(state="normal")
+        self.settings["voice"] = "local:F1"
+        self.run_task(self.voice.list, self._installed_voices_loaded, self._voice_install_failed)
+
+    def _installed_voices_loaded(self, voices):
+        self._voices_loaded(voices)
+        self.persist_settings()
+
+    def _voice_install_failed(self, error):
+        self.install_voice_button.configure(state="normal")
+        self.voice_note.set(str(error))
 
     def selected_voice(self):
         index = self.voice_combo.current()
@@ -425,6 +470,8 @@ class LunaApp:
         try:
             name = self.selected_voice() if self.voice_items else self.settings.get("voice", "")
             save_settings(self.data_dir, name, self.speak_var.get())
+            if name:
+                self.voice_note.set(self._voice_description(name))
         except OSError:
             self.voice_note.set("음성 설정을 저장하지 못했어요. 데이터 폴더의 쓰기 권한을 확인해 주세요.")
 
@@ -452,6 +499,7 @@ class LunaApp:
         self.voice.close()
         self.callbacks.clear()
         self.last_dialog = None
+        self.config_dialog = None
         self.root.after_cancel(self._poll_id)
         self.root.destroy()
 
@@ -459,7 +507,12 @@ class LunaApp:
 def main():
     parser = argparse.ArgumentParser(description="LUNA native desktop assistant")
     parser.add_argument("--data-dir", type=Path, default=default_data_dir())
+    parser.add_argument("--voice-sample", type=Path, help="Generate an offline Korean WAV without opening the UI")
     options = parser.parse_args()
+    if options.voice_sample:
+        from .local_voice import LocalVoice
+        LocalVoice(options.data_dir).synthesize("안녕하세요. 개인 비서 루나입니다.", filename=options.voice_sample)
+        return
     if os.name == "nt":
         import ctypes
         try:

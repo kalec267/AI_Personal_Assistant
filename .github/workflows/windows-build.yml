@@ -19,8 +19,23 @@ jobs:
         run: .venv-py312\Scripts\python.exe -m pip install --only-binary=PyAudio -r requirements-build.txt
       - name: Run tests including native UI
         run: .venv-py312\Scripts\python.exe -m unittest discover -v
+      - name: Verify real offline Korean synthesis
+        run: .venv-py312\Scripts\python.exe -m assistant.local_voice --data-dir "$env:RUNNER_TEMP\luna-voice" --sample "$env:RUNNER_TEMP\luna-voice.wav"
       - name: Build native executable
         run: .venv-py312\Scripts\python.exe -m PyInstaller --noconfirm luna.spec
+      - name: Verify bundled offline voice engine
+        shell: pwsh
+        run: |
+          $sample = "$env:RUNNER_TEMP\luna-bundled.wav"
+          $app = Start-Process -FilePath dist\Luna\Luna.exe -ArgumentList '--data-dir', "$env:RUNNER_TEMP\luna-voice", '--voice-sample', $sample -PassThru
+          try {
+            if (-not $app.WaitForExit(60000)) { throw 'Bundled voice synthesis timed out.' }
+            if ($app.ExitCode -ne 0) { throw 'Bundled voice synthesis failed.' }
+            if (-not (Test-Path $sample)) { throw 'The bundled engine produced no WAV.' }
+            if ((Get-Item $sample).Length -le 44) { throw 'The bundled engine produced an empty WAV.' }
+          } finally {
+            if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
+          }
       - name: Verify executable starts and closes
         shell: pwsh
         run: |

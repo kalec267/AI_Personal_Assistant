@@ -9,6 +9,19 @@ APPS = {"notepad": ("메모장", ["notepad.exe"]), "calculator": ("계산기", [
         "explorer": ("탐색기", ["explorer.exe"]), "edge": ("Microsoft Edge", None)}
 
 
+def media(command):
+    require_windows()
+    keys = {"play_pause": (0xB3, "미디어 재생·일시정지를 요청했어요."),
+            "next": (0xB0, "다음 곡 재생을 요청했어요."), "previous": (0xB1, "이전 곡 재생을 요청했어요.")}
+    if command not in keys:
+        raise UserError("지원하지 않는 미디어 명령입니다.")
+    import ctypes
+    key, message = keys[command]
+    ctypes.windll.user32.keybd_event(key, 0, 0, 0)
+    ctypes.windll.user32.keybd_event(key, 0, 2, 0)
+    return message
+
+
 def require_windows():
     if os.name != "nt":
         raise UserError("프로그램 실행과 볼륨 제어는 Windows PC에서 사용할 수 있습니다.")

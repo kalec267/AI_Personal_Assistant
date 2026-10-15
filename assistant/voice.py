@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 
 from .core import UserError
+from .local_voice import LocalVoice
 
 
 def preferred_voice(voices, saved=""):
@@ -85,6 +86,33 @@ class WindowsVoice:
                     raise UserError("음성 출력에 실패했어요. 음성을 다시 선택하거나 PowerShell 실행 정책을 확인해 주세요.")
         except (OSError, subprocess.SubprocessError):
             raise UserError("Windows 음성 출력을 시작하지 못했어요.") from None
+
+
+class VoiceRouter:
+    def __init__(self, folder):
+        self.local = LocalVoice(folder)
+        self.windows = WindowsVoice()
+
+    def list(self):
+        voices = self.local.list()
+        if os.name == "nt":
+            try:
+                voices += self.windows.list()
+            except UserError:
+                pass
+        return voices
+
+    def speak(self, text, name):
+        self.stop()
+        return (self.local if name.startswith("local:") else self.windows).speak(text, name)
+
+    def stop(self):
+        self.local.stop()
+        self.windows.stop()
+
+    def close(self):
+        self.local.close()
+        self.windows.close()
 
 
 def recognize_once():

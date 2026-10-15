@@ -210,9 +210,41 @@ class NativeUITests(unittest.TestCase):
         self.root.geometry("960x720")
         self.root.update()
         bottom = self.root.winfo_rooty() + self.root.winfo_height()
-        for widget in (self.app.entry, self.app.send_button, self.app.voice_combo, self.app.volume_button, self.app.unmute_button):
+        for widget in (self.app.entry, self.app.send_button, self.app.voice_combo, self.app.volume_button, self.app.unmute_button, self.app.install_voice_button):
             self.assertTrue(widget.winfo_ismapped())
             self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(), bottom)
+
+    def test_ai_proposal_cancelled_in_native_ui_does_not_launch(self):
+        save_settings(self.temp.name, "", False, ai_mode="local", ollama_model="qwen3:4b")
+        calls = [{"function": {"name": "launch_program", "arguments": {"app_id": "notepad"}}}]
+        with patch.object(self.app.service.ollama, "request", return_value={"content": "", "calls": calls}), patch("assistant.app.messagebox.askyesno", return_value=False), patch("assistant.desktop.launch") as launch:
+            self.app.submit("글 쓸 수 있게 메모장 좀 켜 줘")
+            self.wait_for(lambda: not self.app.command_busy)
+            launch.assert_not_called()
+            self.assertEqual(self.app.service._proposals, {})
+            self.assertIn("취소", self.app.chat.get("1.0", "end"))
+
+    def test_ai_proposal_runs_after_native_confirmation(self):
+        save_settings(self.temp.name, "", False, ai_mode="local", ollama_model="qwen3:4b")
+        calls = [{"function": {"name": "launch_program", "arguments": {"app_id": "calculator"}}}]
+        with patch.object(self.app.service.ollama, "request", return_value={"content": "", "calls": calls}), patch("assistant.app.messagebox.askyesno", return_value=True), patch("assistant.desktop.launch", return_value="계산기 실행 요청") as launch:
+            self.app.submit("계산할 일이 있어 계산기 부탁해")
+            self.wait_for(lambda: launch.called and not self.app.command_busy)
+            launch.assert_called_once_with("calculator")
+
+    def test_native_key_dialog_masks_and_keeps_session_key_out_of_settings(self):
+        self.app.open_config()
+        dialog = self.app.config_dialog
+        dialog.mode.set("Ollama 클라우드 · API 키 필요")
+        dialog.mode_changed()
+        dialog.key.set("unit-test-placeholder")
+        dialog.persist.set(False)
+        self.assertTrue(dialog.save())
+        self.assertEqual(dialog.key.get(), "")
+        self.assertEqual(self.app.service.credentials.get(), "unit-test-placeholder")
+        self.assertNotIn("unit-test-placeholder", (Path(self.temp.name) / "settings.json").read_text())
+        self.assertEqual(load_settings(self.temp.name)["ai_mode"], "cloud")
+        dialog.close()
 
 
 if __name__ == "__main__":

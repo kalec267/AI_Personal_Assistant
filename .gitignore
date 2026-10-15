@@ -5,3 +5,6 @@ __pycache__/
 .assistant-data/
 build/
 dist/
+.env
+.env.*
+*.dpapi
