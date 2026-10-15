@@ -1,0 +1,44 @@
+name: Build Windows app
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Install packages
+        run: python -m pip install -r requirements-build.txt
+      - name: Run tests including native UI
+        run: python -m unittest discover -v
+      - name: Build native executable
+        run: python -m PyInstaller --noconfirm luna.spec
+      - name: Verify executable starts and closes
+        shell: pwsh
+        run: |
+          $app = Start-Process -FilePath dist\Luna\Luna.exe -ArgumentList '--data-dir', "$env:RUNNER_TEMP\luna-smoke" -PassThru
+          try {
+            $ready = $false
+            for ($attempt = 0; $attempt -lt 20; $attempt++) {
+              Start-Sleep -Seconds 1
+              $app.Refresh()
+              if ($app.HasExited) { throw 'Luna.exe exited before opening its window.' }
+              if ($app.MainWindowTitle -like 'LUNA*') { $ready = $true; break }
+            }
+            if (-not $ready) { throw 'The native app window did not open.' }
+            if (-not $app.CloseMainWindow()) { throw 'Unable to close the app window.' }
+            if (-not $app.WaitForExit(10000)) { throw 'Luna.exe did not exit after closing its window.' }
+            if ($app.ExitCode -ne 0) { throw "Luna.exe returned $($app.ExitCode)." }
+          } finally {
+            if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Luna-Windows-x64
+          path: dist/Luna/
+          if-no-files-found: error

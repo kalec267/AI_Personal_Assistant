@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f6f7fb">
+  <title>LUNA · 나의 개인 비서</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <aside class="rail" aria-label="앱 소개"><a class="logo" href="/" aria-label="루나 홈">L<span>✦</span></a><span class="rail-label">PERSONAL ASSISTANT</span><span class="rail-bottom">01</span></aside>
+  <main>
+    <header class="topbar"><div class="wordmark">LUNA<span>내 일상에, 조금 더 여유를.</span></div><div class="connection" id="connection" role="status"><i></i>연결 중</div></header>
+    <section class="page-heading"><div><p class="eyebrow" id="today-label">YOUR EVERYDAY COMPANION</p><h1>안녕하세요.<br>오늘도 함께할게요<span class="accent">.</span></h1><p class="subtitle">말 한마디로 정리하는 하루, 나만의 작은 비서.</p></div><div class="clock"><strong id="clock">--:--</strong><span>PC 현지 시간 기준</span></div></section>
+    <div class="workspace">
+      <section class="assistant panel" aria-labelledby="assistant-heading">
+        <div class="panel-heading"><div><span class="section-index">01 / ASSISTANT</span><h2 id="assistant-heading">무엇을 도와드릴까요?</h2></div><span class="tag" id="mode-label">로컬 명령</span></div>
+        <div class="voice-stage"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="orb"><span>✦</span></div><p id="voice-status" role="status">당신의 이야기를 기다리고 있어요</p></div>
+        <div class="conversation" id="conversation" role="log" aria-label="비서와의 대화" aria-live="polite"><div class="message assistant-message">저는 루나예요. 일정을 정리하거나 PC를 제어해 보세요. 마이크를 누르면 한국어로 말할 수 있어요.</div></div>
+        <div class="suggestions"><button data-command="내일 오후 3시 팀 회의 일정 추가">내일 회의 잡아줘 <span>↗</span></button><button data-command="오늘 일정 보여줘">오늘 일정 알려줘 <span>↗</span></button></div>
+        <form id="command-form" class="command-box"><label class="sr-only" for="command">명령 입력</label><input id="command" autocomplete="off" maxlength="500" placeholder="루나에게 부탁해 보세요…" required><button type="button" id="mic" class="mic" aria-label="음성 인식 시작" title="음성 인식 시작"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M6 11v1a6 6 0 0 0 12 0v-1M12 18v3M9 21h6"/></svg></button><button class="send" id="send" aria-label="명령 보내기">↑</button></form>
+        <p class="micro-note">음성 인식 후 내용을 확인하고 보내세요. 브라우저 음성 서비스로 오디오가 전송될 수 있습니다.</p>
+      </section>
+      <section class="schedule panel" aria-labelledby="schedule-heading"><div class="panel-heading"><div><span class="section-index">02 / YOUR DAY</span><h2 id="schedule-heading">나의 일정</h2></div><button class="icon-button" id="new-event" aria-label="일정 추가">+</button></div><div class="date-nav"><button id="previous-day" aria-label="이전 날">‹</button><label class="sr-only" for="selected-date">일정 날짜</label><input type="date" id="selected-date"><button id="next-day" aria-label="다음 날">›</button><button id="go-today" class="today-button">오늘</button></div><div class="events" id="events" aria-live="polite"></div><a href="/api/calendar.ics" class="export-link" download="luna-calendar.ics">전체 일정 내보내기 <span>↗</span></a><p class="micro-note">PC에 저장되는 개인 일정입니다. Google·Outlook 자동 동기화는 지원하지 않습니다.</p></section>
+      <section class="controls panel" aria-labelledby="control-heading"><div class="panel-heading"><div><span class="section-index">03 / QUICK ACTIONS</span><h2 id="control-heading">일상의 작은 명령</h2></div><span class="tag">WINDOWS</span></div><div class="control-grid"><div class="control-group"><span class="control-label">프로그램 실행</span><div class="app-buttons"><button data-desktop data-command="메모장 실행"><span>▤</span>메모장</button><button data-desktop data-command="계산기 실행"><span>⊞</span>계산기</button><button data-desktop data-command="탐색기 열어"><span>▱</span>탐색기</button><button data-desktop data-command="엣지 실행"><span>◎</span>Edge</button></div></div><div class="control-group volume-group"><span class="control-label">사운드 제어</span><form id="volume-form"><label for="volume">볼륨 <output id="volume-value">30%</output></label><input id="volume" type="range" min="0" max="100" value="30"><button data-desktop class="small-button">적용</button></form><div class="sound-buttons"><button data-desktop data-command="음소거">음소거</button><button data-desktop data-command="음소거 해제">음소거 해제</button></div><span class="micro-note">슬라이더는 적용할 값입니다.</span></div></div><p id="desktop-note" class="micro-note">이 PC에서 실행 중인 Windows 서버에 명령을 보냅니다.</p></section>
+      <section class="voice-settings panel" aria-labelledby="voice-heading"><div class="panel-heading"><div><span class="section-index">04 / VOICE</span><h2 id="voice-heading">루나의 목소리</h2></div><span class="voice-symbol">◌</span></div><label class="switch-line" for="speak-enabled">음성으로 답변 듣기<input type="checkbox" id="speak-enabled" checked></label><label for="voice-select" class="control-label">음성 선택 · 한국어 여성 음성 우선</label><select id="voice-select"><option value="">음성을 불러오는 중…</option></select><button id="test-voice" class="test-voice">▷ 목소리 들어보기</button><p id="voice-note" class="micro-note">PC에 설치된 음성 중 선택할 수 있어요.</p></section>
+    </div>
+    <footer><span>✦ LUNA</span><p>당신의 하루가 조금 더 가벼워지도록.</p><span>LOCAL FIRST</span></footer>
+  </main>
+  <dialog id="event-dialog"><form id="event-form"><div class="dialog-heading"><div><p class="eyebrow">MAKE ROOM FOR YOUR DAY</p><h2>새 일정</h2></div><button id="close-dialog" type="button" class="icon-button" aria-label="닫기">×</button></div><label for="event-title">일정 이름</label><input id="event-title" maxlength="200" required placeholder="어떤 일정인가요?"><label for="event-start">시작 · PC 현지 시간</label><input type="datetime-local" id="event-start" required><label for="event-end">종료</label><input type="datetime-local" id="event-end" required><p id="event-error" role="alert"></p><button class="primary" id="save-event">일정 저장하기</button></form></dialog>
+  <div class="toast" id="toast" role="status" hidden></div>
+</body>
+</html>
