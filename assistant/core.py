@@ -107,9 +107,6 @@ def parse_command(text: str, now: dt.datetime | None = None):
         if re.search(r"내려|낮춰|작게|줄여", text):
             return dict(action="volume", mode="down")
         raise UserError("예: 볼륨 30퍼센트, 볼륨 올려, 음소거 해제")
-    for alias, app in [("메모장", "notepad"), ("계산기", "calculator"), ("탐색기", "explorer"), ("엣지", "edge")]:
-        if not calendar_request and alias in text and re.search(r"실행|열어|켜", text):
-            return dict(action="launch", app=app)
     if schedule and re.search(r"보여|알려|목록|확인", text):
         day = None
         for token, offset in [("모레", 2), ("내일", 1), ("오늘", 0)]:

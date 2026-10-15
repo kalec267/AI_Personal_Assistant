@@ -33,7 +33,7 @@ def tools(catalog, *, allow_windows=False):
         available.append(tool("run_windows_command", "Windows PowerShell 5.1 명령 실행. 파일·폴더, 프로그램·프로세스, 서비스, 레지스트리와 시스템 설정 제어. 실행 전 사용자가 명령 전체를 확인함", {
             "command": {"type": "string", "minLength": 1, "maxLength": 4000},
             "description": {"type": "string", "maxLength": 300, "description": "사용자가 이해할 작업과 영향. 삭제·종료·설정 변경은 구체적으로 설명"}}, ["command", "description"]))
-    return available
+    return [item for item in available if catalog or item["function"]["name"] != "launch_program"]
 
 
 class Ollama:
@@ -58,7 +58,7 @@ class Ollama:
             "아직 실행되지 않았으므로 완료했다고 말하지 마세요. 질문·부정·취소에는 조작을 제안하지 마세요. "
             "최근 대화를 참고해 후속 질문과 생략된 표현을 이해하세요. 과거 작업은 새 요청 없이 반복하지 마세요. "
             "조작 기록의 대기·취소·실패·완료 상태를 구분하세요. 한 요청에 최대 5개 동작입니다. 등록 앱 ID만 사용하세요. "
-            "정보가 부족하면 질문하세요. "
+            "정보가 부족하면 질문하세요. 실행할 프로그램이 등록 목록에 없으면 설정 → 프로그램에서 이름과 .exe 파일을 등록하도록 안내하세요. "
             "일정 생성은 다른 동작과 섞지 마세요. 날짜·시각·제목이 누락되거나 오전/오후가 불명확하면 물어보세요. "
             "일정 종료를 말하지 않으면 1시간입니다. URL은 사용자가 지정한 HTTPS 사이트만 제안하세요. "
             "소리만 줄이라는 요청에 음소거 해제를 추가하지 마세요. "

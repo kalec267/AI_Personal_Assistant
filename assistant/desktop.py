@@ -5,10 +5,6 @@ from pathlib import Path
 
 from .core import UserError
 
-APPS = {"notepad": ("메모장", ["notepad.exe"]), "calculator": ("계산기", ["calc.exe"]),
-        "explorer": ("탐색기", ["explorer.exe"]), "edge": ("Microsoft Edge", None)}
-
-
 def media(command):
     require_windows()
     keys = {"play_pause": (0xB3, "미디어 재생·일시정지를 요청했어요."),
@@ -25,21 +21,6 @@ def media(command):
 def require_windows():
     if os.name != "nt":
         raise UserError("프로그램 실행과 볼륨 제어는 Windows PC에서 사용할 수 있습니다.")
-
-
-def launch(app):
-    require_windows()
-    if app not in APPS:
-        raise UserError("허용되지 않은 프로그램입니다.")
-    label, command = APPS[app]
-    try:
-        if app == "edge":
-            os.startfile("microsoft-edge:")
-        else:
-            subprocess.Popen(command, shell=False)
-    except OSError:
-        raise UserError(f"{label} 실행에 실패했습니다. 설치 여부를 확인해 주세요.") from None
-    return f"{label} 실행을 요청했습니다."
 
 
 def volume(mode, value=0):

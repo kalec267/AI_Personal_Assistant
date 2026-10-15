@@ -118,10 +118,11 @@ class ConfigDialog(tk.Toplevel):
 
     def _build_programs(self, frame):
         self.heading(frame, "실행 프로그램")
-        ttk.Label(frame, text="직접 선택한 .exe에 부를 이름을 지정하세요. 등록·삭제는 즉시 저장됩니다.", wraplength=580).pack(anchor="w", pady=(0, 12))
+        ttk.Label(frame, text="기본 등록 프로그램은 없습니다. .exe 파일과 음성으로 부를 이름을 직접 등록하세요.\n예: ‘크롬’으로 등록 → ‘루나, 크롬 열어줘’. AI 연결 없이도 실행할 수 있습니다.\n등록·삭제는 즉시 저장되며, 부를 이름은 서로 달라야 합니다.", wraplength=580).pack(anchor="w", pady=(0, 12))
         self.program_list = ttk.Treeview(frame, columns=("name",), show="headings", height=7, selectmode="browse")
         self.program_list.heading("name", text="프로그램 이름")
         self.program_list.pack(fill="x")
+        self.program_empty = ttk.Label(frame, text="등록된 프로그램이 없어요. 아래에서 첫 프로그램을 추가해 주세요.", wraplength=580)
         ttk.Label(frame, text="부를 이름 (예: 크롬, 음악 앱)").pack(anchor="w", pady=(15, 5))
         ttk.Entry(frame, textvariable=self.app_name).pack(fill="x")
         ttk.Label(frame, textvariable=self.path_label, wraplength=580).pack(anchor="w", pady=10)
@@ -303,8 +304,13 @@ class ConfigDialog(tk.Toplevel):
 
     def refresh_programs(self):
         self.program_list.delete(*self.program_list.get_children())
-        for item in self.app.service.programs.catalog():
+        items = self.app.service.programs.catalog()
+        for item in items:
             self.program_list.insert("", "end", iid=item["id"], values=(item["name"],))
+        if items:
+            self.program_empty.pack_forget()
+        else:
+            self.program_empty.pack(after=self.program_list, anchor="w", pady=8)
 
     def choose_program(self):
         filename = filedialog.askopenfilename(parent=self, title="실행할 프로그램 선택", filetypes=[("Windows 실행 파일", "*.exe")])
@@ -319,7 +325,8 @@ class ConfigDialog(tk.Toplevel):
         try:
             self.app.service.programs.register(self.app_name.get(), self.program_path)
             self.refresh_programs()
-            self.program_feedback.set("등록을 저장했어요. AI에게 이 이름으로 요청하세요.")
+            name = self.app_name.get().strip()
+            self.program_feedback.set(f"등록했어요. ‘{name} 열어줘’ 또는 ‘루나, {name} 실행해줘’라고 말씀하세요.")
         except (UserError, OSError) as error:
             self.program_feedback.set(str(error) if isinstance(error, UserError) else "등록 목록을 저장하지 못했어요.")
 

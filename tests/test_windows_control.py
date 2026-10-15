@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 from assistant import windows_control as windows
 from assistant.actions import validate_calls, perform
+from tests.program_fixtures import register_fixture_programs
 from assistant.core import UserError
 from assistant.ollama import Ollama
 from assistant.service import AssistantService
@@ -24,6 +25,7 @@ class WindowsPermissionTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         save_settings(self.temp.name, "", False, ai_mode="local", ollama_model="qwen3:4b")
         self.service = AssistantService(self.temp.name)
+        register_fixture_programs(self.service.programs)
 
     def tearDown(self):
         self.temp.cleanup()
@@ -78,7 +80,7 @@ class WindowsPermissionTests(unittest.TestCase):
         self.enable()
         result = self.propose([{"function": {"name": "launch_program", "arguments": {"app_id": "notepad"}}}, command_call()])
         self.enable(False)
-        with patch("assistant.desktop.launch") as launch, patch("assistant.windows_control.run_command") as run:
+        with patch("assistant.programs.Programs.launch") as launch, patch("assistant.windows_control.run_command") as run:
             with self.assertRaisesRegex(UserError, "꺼져"):
                 self.service.confirm_proposal(result["proposal"]["id"])
             launch.assert_not_called()
@@ -107,7 +109,7 @@ class WindowsPermissionTests(unittest.TestCase):
     def test_failure_keeps_output_and_stops_following_actions(self):
         self.enable()
         result = self.propose([command_call(), {"function": {"name": "launch_program", "arguments": {"app_id": "notepad"}}}])
-        with patch("assistant.windows_control.run_command", side_effect=UserError("PowerShell 명령 실패: 접근 거부")), patch("assistant.desktop.launch") as launch:
+        with patch("assistant.windows_control.run_command", side_effect=UserError("PowerShell 명령 실패: 접근 거부")), patch("assistant.programs.Programs.launch") as launch:
             completed = self.service.confirm_proposal(result["proposal"]["id"])
             self.assertIn("접근 거부", completed["message"])
             self.assertIn("이후 동작은 실행하지 않았습니다", completed["message"])

@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 from . import conversation, desktop
 from .core import Calendar, UserError, parse_command
+from .programs import Programs
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = ROOT / "static"
@@ -23,6 +24,7 @@ class Server(ThreadingHTTPServer):
     def __init__(self, address, data_dir):
         super().__init__(address, Handler)
         self.calendar = Calendar(Path(data_dir) / "calendar.sqlite3")
+        self.programs = Programs(data_dir)
         self.token = secrets.token_urlsafe(32)
 
 
@@ -67,7 +69,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/config":
             return self.send(200, {"token": self.server.token, "windows": os.name == "nt", "ai": conversation.enabled(),
                                    "time": dt.datetime.now().astimezone().isoformat(),
-                                   "apps": [{"id": key, "name": item[0]} for key, item in desktop.APPS.items()]})
+                                   "apps": self.server.programs.catalog()})
         if path == "/api/events":
             return self.send(200, self.server.calendar.list())
         if path == "/api/calendar.ics":
@@ -102,6 +104,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/command":
                 if not isinstance(data.get("text"), str):
                     raise UserError("명령을 입력해 주세요.")
+                program = self.server.programs.resolve(data["text"])
+                if program:
+                    return self.send(200, {"message": self.server.programs.launch(program["id"])})
                 intent = parse_command(data["text"])
                 action = intent["action"]
                 if action == "create":
@@ -116,8 +121,6 @@ class Handler(BaseHTTPRequestHandler):
                     message = "저장된 일정이 없어요." if not events else f"일정 {len(events)}개가 있어요. " + " / ".join(
                         f"{event['start'].replace('T', ' ')} {event['title']}" for event in events[:10])
                     return self.send(200, {"message": message})
-                if action == "launch":
-                    return self.send(200, {"message": desktop.launch(intent["app"])})
                 if action == "volume":
                     return self.send(200, {"message": desktop.volume(intent["mode"], intent.get("value", 0))})
                 return self.send(200, {"message": conversation.answer(data["text"])})

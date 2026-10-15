@@ -15,7 +15,7 @@ def answer(text):
     key = os.environ.get("LUNA_OPENAI_API_KEY")
     if not key:
         return ("저는 루나예요. ‘내일 오후 3시 팀 회의 일정 추가’, ‘오늘 일정 보여줘’, "
-                "‘메모장 실행’, ‘볼륨 30퍼센트’라고 말해 보세요. "
+                "‘등록한 프로그램 이름 열어줘’, ‘볼륨 30퍼센트’라고 말해 보세요. "
                 "데스크톱 앱의 ‘설정’에서 Ollama 연결을 설정해 주세요.")
     payload = {
         "model": os.environ.get("LUNA_OPENAI_MODEL", "gpt-4.1-mini"),

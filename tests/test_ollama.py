@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from assistant.actions import validate_calls, website_url
+from tests.program_fixtures import register_fixture_programs
 from assistant.core import UserError
 from assistant.credentials import Credentials
 from assistant.local_voice import LocalVoice, install_model
@@ -103,6 +104,7 @@ class ProposalTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.service = AssistantService(self.temp.name)
+        register_fixture_programs(self.service.programs)
         save_settings(self.temp.name, "", False, ai_mode="local", ollama_model="qwen3:4b")
 
     def tearDown(self):
@@ -113,7 +115,7 @@ class ProposalTests(unittest.TestCase):
             return self.service.execute("글 쓰게 메모장을 켜고 소리를 25퍼센트로 맞춰줘")
 
     def test_multiple_actions_wait_for_confirmation_and_only_run_once(self):
-        with patch("assistant.desktop.launch", return_value="메모장 요청") as launch, patch("assistant.desktop.volume", return_value="볼륨 변경") as volume:
+        with patch("assistant.programs.Programs.launch", return_value="메모장 요청") as launch, patch("assistant.desktop.volume", return_value="볼륨 변경") as volume:
             result = self.propose([call("launch_program", app_id="notepad"), call("set_volume", mode="set", value=25)])
             self.assertNotIn("실행 완료", result["message"])
             launch.assert_not_called()
@@ -128,7 +130,7 @@ class ProposalTests(unittest.TestCase):
                 self.service.confirm_proposal(identifier)
 
     def test_cancel_and_expiration_have_no_side_effects(self):
-        with patch("assistant.desktop.launch") as launch:
+        with patch("assistant.programs.Programs.launch") as launch:
             result = self.propose([call("launch_program", app_id="notepad")])
             identifier = result["proposal"]["id"]
             self.service.discard_proposal(identifier)
@@ -148,7 +150,7 @@ class ProposalTests(unittest.TestCase):
                  [call("set_volume", mode="set", value=101)],
                  [call("launch_program", app_id="notepad", args=["unexpected"])],
                  [call("launch_program", app_id="not registered")]]
-        with patch("assistant.desktop.launch") as launch:
+        with patch("assistant.programs.Programs.launch") as launch:
             for plan in plans:
                 with self.subTest(plan=plan), self.assertRaises(UserError):
                     self.propose(plan)
@@ -157,7 +159,7 @@ class ProposalTests(unittest.TestCase):
 
     def test_failure_stops_later_actions_and_reports_partial_completion(self):
         result = self.propose([call("launch_program", app_id="notepad"), call("set_volume", mode="set", value=30), call("media_control", command="next")])
-        with patch("assistant.desktop.launch", return_value="메모장 실행 요청 완료"), patch("assistant.desktop.volume", side_effect=UserError("장치 없음")), patch("assistant.desktop.media") as media:
+        with patch("assistant.programs.Programs.launch", return_value="메모장 실행 요청 완료"), patch("assistant.desktop.volume", side_effect=UserError("장치 없음")), patch("assistant.desktop.media") as media:
             completed = self.service.confirm_proposal(result["proposal"]["id"])
             self.assertIn("메모장 실행 요청 완료", completed["message"])
             self.assertIn("중단", completed["message"])

@@ -69,6 +69,13 @@ class AssistantService:
                     return self._remember(text, result, self.history.generation,
                                           search["label"] + " 결과 페이지 열기를 준비했습니다. 기사·영상 내용은 조회하지 않았습니다.")
             return result
+        program = self.programs.resolve(text)
+        if program:
+            if options.get("ai_mode", "off") != "off":
+                with self._lock:
+                    return self._interpret_result(text, {"content": "", "calls": [{"function": {
+                        "name": "launch_program", "arguments": {"app_id": program["id"]}}}]}, self.history.generation)
+            return {"message": self.programs.launch(program["id"])}
         if options.get("ai_mode", "off") != "off":
             # Use the model for the entire utterance, so multi-step requests are
             # not partially executed by the old keyword parser.
@@ -82,11 +89,13 @@ class AssistantService:
             events = self.events_on(intent["day"]) if intent["day"] else self.calendar.list()
             message = "저장된 일정이 없어요." if not events else f"일정 {len(events)}개가 있어요. " + " / ".join(
                 f"{event['start'].replace('T', ' ')} {event['title']}" for event in events[:10])
-        elif action == "launch":
-            message = desktop.launch(intent["app"])
         elif action == "volume":
             message = desktop.volume(intent["mode"], intent.get("value", 0))
         else:
+            target = self.programs.launch_target(text)
+            if target:
+                return {"message": f"‘{target}’에 해당하는 프로그램이 등록되지 않았어요. 설정 → 프로그램에서 부를 이름과 .exe 파일을 등록해 주세요.",
+                        "open_settings": True, "settings_tab": "programs"}
             # AI off must not contact an unrelated provider because a legacy
             # environment variable happens to exist on the user's machine.
             return {"message": "현재는 기본 명령 모드예요. 자연어 대화와 명령을 사용하려면 "

@@ -12,7 +12,9 @@ from pathlib import Path
 from unittest.mock import ANY, MagicMock, patch
 
 from assistant.app import LunaApp
+from tests.program_fixtures import register_fixture_programs
 from assistant.core import UserError
+from assistant.programs import Programs
 from assistant.service import AssistantService
 from assistant.settings import load_settings, save_settings
 from assistant.voice import WindowsVoice, VoiceRouter, preferred_voice, recognize_once
@@ -32,13 +34,14 @@ class ServiceTests(unittest.TestCase):
     def test_native_command_flow_without_http(self):
         with tempfile.TemporaryDirectory() as folder:
             service = AssistantService(folder)
+            register_fixture_programs(service.programs)
             result = service.execute("내일 오후 3시 팀 회의 일정 추가")
             self.assertEqual(service.calendar.list(), [])
             draft = result["draft"]
             saved = service.calendar.add(draft["title"], draft["start"], draft["end"])
             self.assertIn("팀 회의", service.execute("내일 일정 보여줘")["message"])
             self.assertEqual(AssistantService(folder).calendar.list()[0]["id"], saved["id"])
-            with patch("assistant.desktop.launch", return_value="실행됨") as launch:
+            with patch("assistant.programs.Programs.launch", return_value="실행됨") as launch:
                 self.assertEqual(service.execute("계산기 실행")["message"], "실행됨")
                 launch.assert_called_once_with("calculator")
             with patch("assistant.desktop.volume", return_value="변경됨") as volume:
@@ -148,6 +151,7 @@ class NativeUITests(unittest.TestCase):
                 raise
             self.skipTest(f"GUI display unavailable: {error}")
         self.temp = tempfile.TemporaryDirectory()
+        register_fixture_programs(Programs(self.temp.name))
         self.voice = MagicMock()
         self.voice.prepare.side_effect = lambda *args, **kwargs: functools.partial(self.voice.speak, *args, **kwargs)
         self.app = LunaApp(self.root, self.temp.name, voice=self.voice, recognizer=lambda: "메모장 실행", load_voices=False)
@@ -189,7 +193,7 @@ class NativeUITests(unittest.TestCase):
         listener = self.attach_wake_listener()
         listener.events.put((listener.epoch, "wake", None))
         listener.events.put((listener.epoch, "audio", (b"command", 16000, True)))
-        with patch("assistant.app.transcribe_command", return_value="메모장 실행") as recognize, patch("assistant.app.desktop.launch", return_value="메모장 실행 완료") as launch:
+        with patch("assistant.app.transcribe_command", return_value="메모장 실행") as recognize, patch("assistant.programs.Programs.launch", return_value="메모장 실행 완료") as launch:
             self.app.poll_wake()
             self.wait_for(lambda: launch.called and not self.app.command_busy and not self.app.listening)
             recognize.assert_called_once_with((b"command", 16000, True))
@@ -225,7 +229,7 @@ class NativeUITests(unittest.TestCase):
             release.wait(3)
             return "메모장 실행"
 
-        with patch("assistant.app.transcribe_command", side_effect=recognize), patch("assistant.app.desktop.launch") as launch:
+        with patch("assistant.app.transcribe_command", side_effect=recognize), patch("assistant.programs.Programs.launch") as launch:
             self.app.poll_wake()
             try:
                 self.assertTrue(started.wait(3))
@@ -275,6 +279,44 @@ class NativeUITests(unittest.TestCase):
         self.assertFalse(self.app.config_dialog.wake_enabled.get())
         self.assertTrue(self.app.config_dialog.wake_during_speech.get())
         self.app.config_dialog.close()
+
+    def test_user_registers_chrome_then_voice_and_wake_launch_the_selected_exe(self):
+        for item in self.app.service.programs.catalog():
+            self.app.service.programs.remove(item["id"])
+        self.app.open_config()
+        dialog = self.app.config_dialog
+        self.assertEqual(dialog.program_list.get_children(), ())
+        exe = Path(self.temp.name) / "My Chrome.exe"
+        exe.write_bytes(b"never execute fixture")
+        dialog.app_name.set("크롬")
+        with patch("assistant.config_dialog.filedialog.askopenfilename", return_value=str(exe)):
+            dialog.choose_program()
+        dialog.register_program()
+        self.assertEqual(len(dialog.program_list.get_children()), 1)
+        self.assertIn("크롬 열어줘", dialog.program_feedback.get())
+        dialog.close()
+        self.app.recognizer = lambda: "크롬 열어줘"
+        with patch("assistant.desktop.require_windows"), patch("assistant.programs.subprocess.Popen") as popen:
+            self.app.listen()
+            self.wait_for(lambda: not self.app.listening and not self.app.command_busy)
+            popen.assert_called_once_with([str(exe)], shell=False, cwd=str(exe.parent))
+            self.assertIn("크롬 실행을 요청", self.app.chat.get("1.0", "end"))
+            popen.reset_mock()
+            listener = self.attach_wake_listener()
+            listener.events.put((listener.epoch, "wake", None))
+            listener.events.put((listener.epoch, "audio", (b"wake-command", 16000, True)))
+            with patch("assistant.app.transcribe_command", return_value="크롬 열어줘"):
+                self.app.poll_wake()
+                self.wait_for(lambda: popen.called and not self.app.listening and not self.app.command_busy)
+            popen.assert_called_once_with([str(exe)], shell=False, cwd=str(exe.parent))
+
+    def test_unregistered_program_request_opens_the_programs_tab(self):
+        self.app.submit("등록안한브라우저 열어줘")
+        self.wait_for(lambda: self.app.config_dialog is not None)
+        dialog = self.app.config_dialog
+        self.assertEqual(dialog.notebook.index(dialog.notebook.select()), 1)
+        self.assertIn("등록되지", self.app.chat.get("1.0", "end"))
+        dialog.close()
 
     def test_microphone_stops_speech_before_capturing_audio(self):
         calls = []
@@ -326,7 +368,7 @@ class NativeUITests(unittest.TestCase):
         self.assertEqual(self.app.service.calendar.list(), [])
 
     def test_voice_recognition_executes_once_without_enter_or_confirmation(self):
-        with patch("assistant.desktop.launch", return_value="메모장 실행 완료") as launch, patch("assistant.app.messagebox.askyesno", side_effect=AssertionError("no recognition confirmation")):
+        with patch("assistant.programs.Programs.launch", return_value="메모장 실행 완료") as launch, patch("assistant.app.messagebox.askyesno", side_effect=AssertionError("no recognition confirmation")):
             self.app.listen()
             self.wait_for(lambda: not self.app.listening and not self.app.command_busy)
             self.assertEqual(self.app.command_var.get(), "")
@@ -352,7 +394,7 @@ class NativeUITests(unittest.TestCase):
         self.app.apply_settings()
         calls = [{"function": {"name": "launch_program", "arguments": {"app_id": "notepad"}}},
                  {"function": {"name": "set_volume", "arguments": {"mode": "set", "value": 25}}}]
-        with patch.object(self.app.service.ollama, "request", return_value={"content": "", "calls": calls}), patch("assistant.desktop.launch", return_value="메모장 실행 완료") as launch, patch("assistant.desktop.volume", return_value="볼륨 25퍼센트") as volume, patch.object(self.app, "confirm_actions", side_effect=AssertionError("no extra confirmation")):
+        with patch.object(self.app.service.ollama, "request", return_value={"content": "", "calls": calls}), patch("assistant.programs.Programs.launch", return_value="메모장 실행 완료") as launch, patch("assistant.desktop.volume", return_value="볼륨 25퍼센트") as volume, patch.object(self.app, "confirm_actions", side_effect=AssertionError("no extra confirmation")):
             self.app.listen()
             self.wait_for(lambda: not self.app.listening and not self.app.command_busy and self.voice.speak.called)
             launch.assert_called_once_with("notepad")
@@ -388,7 +430,7 @@ class NativeUITests(unittest.TestCase):
             release.wait(3)
             return "메모장 실행"
         self.app.recognizer = MagicMock(side_effect=recognize)
-        with patch("assistant.desktop.launch", return_value="실행 완료") as launch:
+        with patch("assistant.programs.Programs.launch", return_value="실행 완료") as launch:
             self.app.listen()
             self.app.listen()
             self.app.submit("계산기 실행")
@@ -481,7 +523,7 @@ class NativeUITests(unittest.TestCase):
     def test_ai_proposal_cancelled_in_native_ui_does_not_launch(self):
         save_settings(self.temp.name, "", False, ai_mode="local", ollama_model="qwen3:4b")
         calls = [{"function": {"name": "launch_program", "arguments": {"app_id": "notepad"}}}]
-        with patch.object(self.app.service.ollama, "request", return_value={"content": "", "calls": calls}), patch("assistant.app.messagebox.askyesno", return_value=False), patch("assistant.desktop.launch") as launch:
+        with patch.object(self.app.service.ollama, "request", return_value={"content": "", "calls": calls}), patch("assistant.app.messagebox.askyesno", return_value=False), patch("assistant.programs.Programs.launch") as launch:
             self.app.submit("글 쓸 수 있게 메모장 좀 켜 줘")
             self.wait_for(lambda: not self.app.command_busy)
             launch.assert_not_called()
@@ -491,7 +533,7 @@ class NativeUITests(unittest.TestCase):
     def test_ai_proposal_runs_after_native_confirmation(self):
         save_settings(self.temp.name, "", False, ai_mode="local", ollama_model="qwen3:4b")
         calls = [{"function": {"name": "launch_program", "arguments": {"app_id": "calculator"}}}]
-        with patch.object(self.app.service.ollama, "request", return_value={"content": "", "calls": calls}), patch("assistant.app.messagebox.askyesno", return_value=True), patch("assistant.desktop.launch", return_value="계산기 실행 요청") as launch:
+        with patch.object(self.app.service.ollama, "request", return_value={"content": "", "calls": calls}), patch("assistant.app.messagebox.askyesno", return_value=True), patch("assistant.programs.Programs.launch", return_value="계산기 실행 요청") as launch:
             self.app.submit("계산할 일이 있어 계산기 부탁해")
             self.wait_for(lambda: launch.called and not self.app.command_busy)
             launch.assert_called_once_with("calculator")

@@ -1,11 +1,19 @@
 """Only user-registered executables can be launched by the model."""
 import json
+import re
 import subprocess
+import unicodedata
 import uuid
 from pathlib import Path
 
 from . import desktop
 from .core import UserError
+
+LAUNCH_VERB = r"(?:열어(?:\s*(?:줘|주세요))?|켜(?:\s*(?:줘|주세요))?|(?:실행|시작)(?:\s*해(?:\s*(?:줘|주세요))?)?)"
+
+
+def name_key(name):
+    return "".join(unicodedata.normalize("NFKC", name).casefold().split())
 
 
 class Programs:
@@ -25,17 +33,42 @@ class Programs:
         return items
 
     def catalog(self):
-        return [{"id": key, "name": value[0]} for key, value in desktop.APPS.items()] + [
-            {"id": key, "name": value["name"]} for key, value in self.custom().items()]
+        return [{"id": key, "name": value["name"]} for key, value in self.custom().items()]
+
+    def resolve(self, text):
+        """Match a whole launch request; never execute incidental app mentions."""
+        request = name_key(text.strip().rstrip(".!?。！？"))
+        items = self.catalog()
+        matches = []
+        for item in items:
+            key = name_key(item["name"])
+            if key and re.fullmatch(re.escape(key) + r"(?:을|를)?(?:좀)?" + LAUNCH_VERB, request):
+                matches.append(item)
+        if len(matches) > 1:
+            raise UserError("같은 명령에 해당하는 등록 이름이 여러 개예요. 설정 → 프로그램에서 서로 다른 이름으로 다시 등록해 주세요.")
+        return matches[0] if matches else None
+
+    @staticmethod
+    def launch_target(text):
+        match = re.fullmatch(r"\s*(.+?)\s*(?:좀\s*)?" + LAUNCH_VERB + r"\s*[.!?。！？]?\s*", text)
+        if not match:
+            return None
+        target = match[1].strip()
+        # Compound requests, questions and negations remain whole requests for AI.
+        if re.search(r"(?:하고|켜고|열고|그리고|말고|하지|취소|방법|어떻게|사용법|예시|\?)", target):
+            return None
+        return target
 
     def register(self, name, filename):
         path = Path(filename).resolve()
-        name = name.strip()
-        if not name or len(name) > 60:
+        name = name.strip() if isinstance(name, str) else ""
+        if not name or len(name) > 60 or any(ord(char) < 32 for char in name):
             raise UserError("프로그램 이름은 1~60자로 입력하세요.")
         if not path.is_file() or path.suffix.lower() != ".exe":
             raise UserError("실행할 .exe 파일을 직접 선택해 주세요.")
         items = self.custom()
+        if any(name_key(item["name"]) == name_key(name) for item in items.values()):
+            raise UserError("이미 등록된 이름이에요. 음성으로 구분할 수 있는 다른 이름을 입력해 주세요.")
         if len(items) >= 50:
             raise UserError("프로그램은 최대 50개까지 등록할 수 있어요.")
         identifier = uuid.uuid4().hex
@@ -60,12 +93,10 @@ class Programs:
         self._save(items)
 
     def launch(self, identifier):
-        if identifier in desktop.APPS:
-            return desktop.launch(identifier)
-        desktop.require_windows()
         item = self.custom().get(identifier)
         if item is None:
             raise UserError("등록되지 않은 프로그램입니다.")
+        desktop.require_windows()
         path = Path(item["path"])
         if not path.is_absolute() or path.suffix.lower() != ".exe" or not path.is_file():
             raise UserError("등록한 실행 파일을 찾지 못했어요. 프로그램을 다시 등록해 주세요.")

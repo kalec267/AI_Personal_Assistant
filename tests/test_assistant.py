@@ -9,7 +9,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from assistant import conversation, desktop
+from tests.program_fixtures import register_fixture_programs
 from assistant.core import Calendar, UserError, parse_command
+from assistant.programs import Programs
 from assistant.server import Server
 
 
@@ -38,7 +40,7 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(parse_command("볼륨 올려"), dict(action="volume", mode="up"))
         self.assertEqual(parse_command("소리 줄여"), dict(action="volume", mode="down"))
         self.assertEqual(parse_command("음소거 해제"), dict(action="volume", mode="unmute"))
-        self.assertEqual(parse_command("메모장 실행"), dict(action="launch", app="notepad"))
+        self.assertEqual(parse_command("메모장 실행"), dict(action="help"))
         with self.assertRaises(UserError):
             parse_command("볼륨 200퍼센트")
 
@@ -100,6 +102,7 @@ class HTTPTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.server = Server(("127.0.0.1", 0), self.temp.name)
+        register_fixture_programs(self.server.programs)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.port = self.server.server_port
@@ -158,7 +161,7 @@ class HTTPTests(unittest.TestCase):
         self.assertNotIn("어제만", result["message"])
 
     def test_desktop_dispatch_is_allowlisted(self):
-        with patch("assistant.desktop.launch", return_value="메모장 실행 요청") as launch:
+        with patch("assistant.programs.Programs.launch", return_value="메모장 실행 요청") as launch:
             self.assertEqual(self.request("POST", "/api/command", {"text": "메모장 실행"})[0], 200)
             launch.assert_called_once_with("notepad")
         with patch("assistant.desktop.volume", return_value="볼륨 변경") as volume:
@@ -168,9 +171,9 @@ class HTTPTests(unittest.TestCase):
 
 class DesktopTests(unittest.TestCase):
     def test_invalid_launch_and_volume_cannot_reach_subprocess(self):
-        with patch("assistant.desktop.require_windows"), patch("assistant.desktop.subprocess.Popen") as popen:
+        with tempfile.TemporaryDirectory() as folder, patch("assistant.desktop.require_windows"), patch("assistant.desktop.subprocess.Popen") as popen:
             with self.assertRaises(UserError):
-                desktop.launch("cmd /c echo anything")
+                Programs(folder).launch("cmd /c echo anything")
             popen.assert_not_called()
         with patch("assistant.desktop.require_windows"), patch("assistant.desktop.subprocess.run") as run:
             for mode, value in [("injection", 0), ("set", 101), ("set", "30")]:

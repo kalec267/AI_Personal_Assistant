@@ -431,7 +431,7 @@ class LunaApp:
             self.day_var.set(result["saved_event"]["start"][:10])
             self.refresh_events()
         if result.get("open_settings"):
-            self.open_config()
+            self.open_config(result.get("settings_tab"))
         if result.get("search"):
             self.open_search(result["search"])
         if result.get("draft"):
@@ -458,11 +458,13 @@ class LunaApp:
             return dialog.approved
         return messagebox.askyesno("AI 동작 확인", proposal["summary"] + "\n\n이 순서로 실행할까요?", parent=self.root)
 
-    def open_config(self):
+    def open_config(self, tab=None):
         if self.config_dialog is not None and self.config_dialog.winfo_exists():
             self.config_dialog.lift()
-            return
-        self.config_dialog = ConfigDialog(self)
+        else:
+            self.config_dialog = ConfigDialog(self)
+        if tab == "programs":
+            self.config_dialog.notebook.select(1)
 
     def open_search(self, spec=None):
         from .search_dialog import SearchDialog

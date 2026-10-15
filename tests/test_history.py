@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from tests.program_fixtures import register_fixture_programs
 from assistant.core import UserError
 from assistant.history import ConversationMemory, MAX_CHARS
 from assistant.ollama import Ollama
@@ -98,6 +99,7 @@ class ServiceConversationTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         save_settings(self.temp.name, "local:F2", False, ai_mode="local", ollama_model="qwen3:4b")
         self.service = AssistantService(self.temp.name)
+        register_fixture_programs(self.service.programs)
 
     def tearDown(self):
         self.temp.cleanup()
@@ -119,7 +121,7 @@ class ServiceConversationTests(unittest.TestCase):
         call = {"function": {"name": "launch_program", "arguments": {"app_id": "notepad"}}}
         with patch.object(self.service.ollama, "request", return_value={"content": "", "calls": [call]}):
             result = self.service.execute("메모장 켜 줘")
-        with patch("assistant.desktop.launch", return_value="메모장 실행 요청 완료") as launch:
+        with patch("assistant.programs.Programs.launch", return_value="메모장 실행 요청 완료") as launch:
             self.service.confirm_proposal(result["proposal"]["id"])
             with patch.object(self.service.ollama, "request", return_value={"content": "메모장을 실행 요청했어요", "calls": []}) as request:
                 self.service.execute("방금 뭘 했지?")
@@ -154,7 +156,7 @@ class ServiceConversationTests(unittest.TestCase):
             return {"content": "", "calls": [{"function": {"name": "launch_program", "arguments": {"app_id": "notepad"}}}]}
         with patch.object(self.service.ollama, "request", side_effect=reply):
             with self.assertRaisesRegex(UserError, "변경"):
-                self.service.execute("메모장 켜 줘")
+                self.service.execute("글 쓸 프로그램이 필요해")
         self.assertEqual(self.service.history.messages(), [])
         self.assertEqual(self.service._proposals, {})
 
@@ -162,7 +164,7 @@ class ServiceConversationTests(unittest.TestCase):
         call = {"function": {"name": "launch_program", "arguments": {"app_id": "notepad"}}}
         with patch.object(self.service.ollama, "request", return_value={"content": "", "calls": [call]}):
             result = self.service.execute("메모장 켜 줘")
-        with patch("assistant.desktop.launch", return_value="실행 요청 완료"), patch.object(self.service.history, "_save", side_effect=OSError("disk full")):
+        with patch("assistant.programs.Programs.launch", return_value="실행 요청 완료"), patch.object(self.service.history, "_save", side_effect=OSError("disk full")):
             reply = self.service.confirm_proposal(result["proposal"]["id"])
             self.assertIn("실행 요청 완료", reply["message"])
             self.assertIn("저장하지 못", self.service.history.warning)
