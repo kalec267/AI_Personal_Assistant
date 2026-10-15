@@ -159,18 +159,24 @@ def recognize_once(*, progress=None):
     recognizer = sr.Recognizer()
     recognizer.operation_timeout = 12
     recognizer.pause_threshold = 1.0
+    recognizer.energy_threshold = 150
+    recognizer.phrase_threshold = 0.1
     try:
         if progress:
-            progress("마이크 연결·주변 소음 확인 중… ‘지금 말씀하세요’가 표시되면 말해 주세요.")
+            progress("마이크 연결 중… ‘지금 말씀하세요’가 표시되면 말해 주세요.")
         with sr.Microphone() as source:
             if source.stream is None:
                 raise UserError("마이크 입력을 열지 못했어요. Windows 기본 입력 장치·마이크 권한·다른 앱의 독점 사용을 확인하세요.")
-            recognizer.adjust_for_ambient_noise(source, duration=0.5)
+            # Do not discard the first half second as ambient noise: it can
+            # contain the entire short command spoken just after a click.
+            # Listen's dynamic threshold still adapts to background noise.
             if progress:
                 progress("지금 말씀하세요. 말이 끝나면 자동으로 명령을 수행합니다.")
             audio = recognizer.listen(source, timeout=5, phrase_time_limit=10)
     except sr.WaitTimeoutError:
-        raise UserError("음성이 감지되지 않았어요. 마이크 버튼을 누르고 다시 말씀해 주세요.") from None
+        raise UserError("5초 동안 말소리를 감지하지 못했어요. 음성을 글자로 바꾸기 전의 입력 문제입니다. "
+                        "설정 → 소리 · 음성 → 음성 입력·출력 점검에서 마이크 이름과 입력 레벨을 확인하세요. "
+                        "말해도 입력 레벨이 낮으면 Windows 기본 입력 장치·입력 볼륨·음소거를 확인하세요.") from None
     except (AttributeError, AssertionError, ImportError, OSError):
         raise UserError("마이크를 사용할 수 없어요. setup.bat 설치, 기본 입력 장치와 Windows 마이크 권한을 확인해 주세요.") from None
     if progress:

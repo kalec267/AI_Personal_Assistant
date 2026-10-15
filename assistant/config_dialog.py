@@ -119,6 +119,7 @@ class ConfigDialog(tk.Toplevel):
         ttk.Spinbox(frame, from_=1, to=20, textvariable=self.history_turns, width=7).pack(anchor="w")
         ttk.Checkbutton(frame, text="최근 대화를 이 PC에 저장해 앱 재시작 후에도 이어가기", variable=self.remember).pack(anchor="w", pady=(10, 5))
         ttk.Label(frame, text="선택하지 않아도 앱을 사용하는 동안 최근 대화를 기억합니다.\n저장 기록은 암호화되지 않은 개인 파일이며, 클라우드 모드에서는 최근 대화도 전송됩니다.\n모델·연결 방식 변경 또는 ‘새 대화’를 누르면 문맥을 초기화합니다.", wraplength=580).pack(anchor="w", pady=8)
+        ttk.Label(frame, text="클라우드 연결에서는 질문·최근 대화와 첨부 내용·이미지가 선택한 AI 서비스로 전송됩니다.", wraplength=580).pack(anchor="w", pady=5)
         ttk.Button(frame, text="새 대화 시작", command=self.app.new_conversation).pack(anchor="w", pady=5)
         ttk.Label(frame, textvariable=self.feedback, wraplength=580).pack(anchor="w", pady=12)
 

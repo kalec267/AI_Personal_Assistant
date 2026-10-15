@@ -414,16 +414,16 @@ class NativeUITests(unittest.TestCase):
             self.wait_for(lambda: self.voice.speak.called and not self.app.command_busy)
         self.voice.speak.assert_called_once_with("안녕하세요. 당신의 개인 비서 루나예요.", "local:F1", speed=1.4)
 
-    def test_voice_search_preference_updates_an_open_search_window(self):
+    def test_voice_search_preference_updates_search_tab_without_erasing_query(self):
         self.app.open_search()
-        dialog = self.app.search_dialog
+        dialog = self.app.search_panel
         dialog.query.set("검색어 유지")
         self.app.recognizer = lambda: "검색 엔진 네이버로 바꿔줘"
         self.app.listen()
         self.wait_for(lambda: not self.app.listening and not self.app.command_busy)
         self.assertEqual(dialog.provider.get(), "네이버")
         self.assertEqual(dialog.query.get(), "검색어 유지")
-        dialog.close()
+        self.app.main_tabs.select(self.app.chat_page)
 
     def test_unregistered_program_request_opens_the_programs_tab(self):
         self.app.submit("등록안한브라우저 열어줘")
@@ -690,7 +690,7 @@ class NativeUITests(unittest.TestCase):
         self.root.geometry("960x620")
         self.root.update()
         bottom = self.root.winfo_rooty() + self.root.winfo_height()
-        for widget in (self.app.entry, self.app.send_button, self.app.settings_button, self.app.attach_button, self.app.summary_button, self.app.search_button):
+        for widget in (self.app.entry, self.app.send_button, self.app.settings_button, self.app.attach_button, self.app.summary_button, self.app.main_tabs):
             self.assertTrue(widget.winfo_ismapped())
             self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(), bottom)
         self.assertEqual(self.app.settings_button.cget("text"), "설정")
@@ -908,9 +908,12 @@ class NativeUITests(unittest.TestCase):
         self.root.geometry("960x620")
         self.root.update()
         self.assertLessEqual(self.app.send_button.winfo_rooty() + self.app.send_button.winfo_height(), self.root.winfo_rooty() + self.root.winfo_height())
-        self.assertTrue(self.app.privacy_note.winfo_ismapped())
-        panel = self.app.privacy_note.master
-        self.assertLessEqual(self.app.privacy_note.winfo_rooty() + self.app.privacy_note.winfo_height(), panel.winfo_rooty() + panel.winfo_height() - 10)
+        attachments = tuple(self.app.attachments)
+        self.app.open_search()
+        self.app.main_tabs.select(self.app.chat_page)
+        self.root.update()
+        self.assertEqual(tuple(self.app.attachments), attachments)
+        self.assertTrue(self.app.chat.winfo_ismapped())
         self.app.clear_attachments()
         self.assertEqual(self.app.attachments, [])
         self.assertEqual(self.app.attachment_dialog.items.get_children(), ())
@@ -919,17 +922,69 @@ class NativeUITests(unittest.TestCase):
     def test_native_search_works_without_ai_and_remembers_service_and_filter(self):
         with patch("assistant.search.webbrowser.open", return_value=True) as browser, patch.object(self.app.service.ollama, "request") as ai:
             self.app.submit("네이버에서 인공지능 동영상 찾아줘")
-            self.wait_for(lambda: self.app.search_dialog is not None and "열기를 요청" in self.app.search_dialog.feedback.get())
+            self.wait_for(lambda: self.app.search_panel is not None and "열기를 요청" in self.app.search_panel.feedback.get())
             self.assertIn("search.naver.com", browser.call_args.args[0])
             self.assertIn("where=video", browser.call_args.args[0])
             ai.assert_not_called()
         self.assertEqual(load_settings(self.temp.name)["search_provider"], "naver")
         self.assertEqual(load_settings(self.temp.name)["search_kind"], "video")
-        self.app.search_dialog.close()
+        self.app.main_tabs.select(self.app.chat_page)
         self.app.open_search()
-        self.assertEqual(self.app.search_dialog.provider.get(), "네이버")
-        self.assertEqual(self.app.search_dialog.kind.get(), "동영상")
-        self.app.search_dialog.close()
+        self.assertEqual(self.app.search_panel.provider.get(), "네이버")
+        self.assertEqual(self.app.search_panel.kind.get(), "동영상")
+        self.app.main_tabs.select(self.app.chat_page)
+
+    def test_main_search_tab_is_persistent_and_never_creates_a_search_window(self):
+        self.assertEqual([self.app.main_tabs.tab(tab, "text") for tab in self.app.main_tabs.tabs()], ["대화", "검색"])
+        panel = self.app.search_panel
+        panel.query.set("삼성 기사")
+        panel.provider.set("네이버")
+        with patch("assistant.search.webbrowser.open") as browser:
+            for _ in range(3):
+                self.app.open_search()
+                self.root.update()
+                self.assertEqual(self.app.main_tabs.select(), str(panel))
+                self.app.main_tabs.select(self.app.chat_page)
+            browser.assert_not_called()
+        self.assertIs(self.app.search_panel, panel)
+        self.assertEqual(panel.query.get(), "삼성 기사")
+        self.assertEqual(panel.provider.get(), "네이버")
+        self.assertFalse(any(isinstance(widget, tk.Toplevel) for widget in self.root.winfo_children()))
+
+    def test_voice_search_command_opens_browser_without_switching_tabs_or_popup(self):
+        self.app.recognizer = lambda: "구글에서 삼성에 대한 기사 찾아줘"
+        with patch("assistant.search.webbrowser.open", return_value=True) as browser:
+            self.app.listen()
+            self.wait_for(lambda: browser.called and not self.app.search_panel.busy and not self.app.listening)
+        self.assertEqual(self.app.main_tabs.select(), str(self.app.chat_page))
+        self.assertEqual(self.app.search_panel.query.get(), "삼성 기사")
+        self.assertFalse(any(isinstance(widget, tk.Toplevel) for widget in self.root.winfo_children()))
+
+    def test_search_tab_button_opens_results_and_keeps_query_after_navigation(self):
+        self.app.open_search()
+        panel = self.app.search_panel
+        panel.query.set("로봇 기술")
+        panel.kind.set("뉴스")
+        with patch("assistant.search.webbrowser.open", return_value=True) as browser:
+            panel.search_button.invoke()
+            self.wait_for(lambda: browser.called and not panel.busy)
+            self.app.main_tabs.select(self.app.chat_page)
+            self.app.open_search()
+            browser.assert_called_once()
+        self.assertEqual(panel.query.get(), "로봇 기술")
+        self.assertEqual(panel.kind.get(), "뉴스")
+        self.assertIn("tbm=nws", panel.url.get())
+
+    def test_calendar_is_compact_and_main_controls_fit_at_minimum_size(self):
+        self.root.geometry("960x620")
+        self.root.update()
+        self.assertLess(self.app.calendar_panel.winfo_width(), self.app.main_tabs.winfo_width())
+        self.assertLess(self.app.calendar_panel.winfo_height(), self.app.main_tabs.winfo_height())
+        bottom = self.root.winfo_rooty() + self.root.winfo_height()
+        for widget in (self.app.tree, self.app.entry, self.app.send_button):
+            self.assertTrue(widget.winfo_ismapped())
+            self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(), bottom)
+        self.assertFalse(hasattr(self.app, "privacy_note"))
 
     def test_windows_command_review_shows_full_script_and_requires_click(self):
         from assistant.command_dialog import CommandDialog

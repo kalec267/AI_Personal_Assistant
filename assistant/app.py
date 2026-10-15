@@ -105,11 +105,10 @@ class LunaApp:
         self.installing_voice = False
         self.last_dialog = None
         self.config_dialog = None
-        self.search_dialog = None
         self.attachment_dialog = None
         self.attachments = []
         self.analysis_progress = queue.Queue()
-        self.attachment_note = tk.StringVar(value="첨부한 파일은 현재 대화에서만 유지됩니다.")
+        self.attachment_note = tk.StringVar(value="첨부 없음")
         self.mode_var = tk.StringVar(value={"off": "기본 명령", "local": "Ollama 로컬", "cloud": "Ollama 클라우드", "openai": "ChatGPT · OpenAI"}.get(self.settings.get("ai_mode", "off"), "기본 명령") + " · 데스크톱")
         self.command_var = tk.StringVar()
         self.day_var = tk.StringVar(value=dt.date.today().isoformat())
@@ -127,7 +126,6 @@ class LunaApp:
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self._style()
         self._build()
-        self.root.bind("<Configure>", self._resize_layout, add="+")
         self.refresh_events()
         self.render_conversation()
         self._poll_id = self.root.after(60, self._poll)
@@ -155,36 +153,30 @@ class LunaApp:
     def _style(self):
         apply_theme(self.root)
 
-    def panel(self, parent, index, title):
-        frame = tk.Frame(parent, bg=PAPER, padx=20, pady=17, highlightbackground=LINE, highlightcolor=LINE, highlightthickness=1)
-        self.label(frame, index, size=8, color=MUTED).pack(anchor="w")
-        self.label(frame, title, size=16, bold=True).pack(anchor="w", pady=(5, 13))
-        return frame
-
     def _build(self):
         header = tk.Frame(self.root, bg=BG, padx=28, pady=18)
         header.grid(row=0, column=0, sticky="ew")
         self.label(header, "LUNA ✦", size=23, bold=True).pack(side="left")
-        self.label(header, "내 일상에, 조금 더 여유를.", size=10, color=MUTED).pack(side="left", padx=22)
         self.settings_button = self.button(header, "설정", self.open_config)
         self.settings_button.pack(side="right")
-        self.search_button = self.button(header, "뉴스·동영상 검색", self.open_search)
-        self.search_button.pack(side="right", padx=8)
         tk.Label(header, textvariable=self.mode_var, bg=BG, fg=BLUE, font=("Malgun Gothic", 9)).pack(side="right", padx=15)
-        body = tk.Frame(self.root, bg=BG, padx=28)
-        body.grid(row=1, column=0, sticky="nsew")
-        body.columnconfigure(0, weight=3, uniform="panels")
-        body.columnconfigure(1, weight=2, uniform="panels")
+        body = tk.Frame(self.root, bg=BG, padx=24)
+        body.grid(row=1, column=0, sticky="nsew", pady=(0, 20))
+        body.columnconfigure(0, weight=1)
+        body.columnconfigure(1, weight=0, minsize=300)
         body.rowconfigure(0, weight=1)
-        left = self.panel(body, "01 / ASSISTANT", "오늘도 함께할게요.")
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
-        orb = tk.Canvas(left, height=65, bg=PAPER, highlightthickness=0)
-        self.orb = orb
-        orb.pack(fill="x")
-        orb.bind("<Configure>", self._draw_orb)
-        tk.Label(left, textvariable=self.status_var, bg=PAPER, fg=MUTED, font=("Malgun Gothic", 9), wraplength=460).pack(pady=(0, 12))
-        tk.Label(left, textvariable=self.wake_note, bg=PAPER, fg=BLUE, font=("Malgun Gothic", 8), wraplength=460).pack(pady=(0, 6))
-        tk.Label(left, textvariable=self.voice_note, bg=PAPER, fg=MUTED, font=("Malgun Gothic", 8), wraplength=460).pack(pady=(0, 6))
+        self.main_tabs = ttk.Notebook(body)
+        self.main_tabs.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+        self.chat_page = tk.Frame(self.main_tabs, bg=PAPER, padx=16, pady=16,
+                                  highlightbackground=LINE, highlightcolor=LINE, highlightthickness=1)
+        self.main_tabs.add(self.chat_page, text="대화")
+        from .search_panel import SearchPanel
+        self.search_panel = SearchPanel(self, self.main_tabs)
+        self.main_tabs.add(self.search_panel, text="검색")
+        self.main_tabs.bind("<<NotebookTabChanged>>", self._tab_changed)
+        left = self.chat_page
+        tk.Label(left, textvariable=self.status_var, bg=PAPER, fg=MUTED,
+                 font=("Malgun Gothic", 9), wraplength=500, anchor="w", justify="left").pack(fill="x", pady=(0, 12))
         transcript = tk.Frame(left, bg=PAPER, height=1)
         transcript.pack_propagate(False)
         transcript.pack(fill="both", expand=True)
@@ -221,40 +213,41 @@ class LunaApp:
         self.mic_button.pack(side="left", padx=6)
         self.send_button = self.button(input_row, "보내기", self.submit, primary=True)
         self.send_button.pack(side="left")
-        note = self.label(left, "‘루나’ 감지는 로컬 · 호출 후 명령은 Google에 음성 전송\n클라우드 AI 사용 시 선택한 서비스로 첨부 내용·이미지도 전송됩니다.", size=8, color=MUTED)
-        note.configure(wraplength=470)
-        note.pack(anchor="w", pady=(9, 0))
-        self.privacy_note = note
         right = tk.Frame(body, bg=BG)
-        right.grid(row=0, column=1, sticky="nsew")
+        right.grid(row=0, column=1, sticky="new")
         right.columnconfigure(0, weight=1)
-        right.rowconfigure(0, weight=1)
-        schedule = self.panel(right, "02 / YOUR DAY", "나의 일정")
-        schedule.grid(row=0, column=0, sticky="nsew")
+        schedule = tk.Frame(right, bg=PAPER, padx=14, pady=16, highlightbackground=LINE, highlightthickness=1)
+        self.calendar_panel = schedule
+        schedule.grid(row=0, column=0, sticky="new")
+        self.label(schedule, "나의 일정", size=15, bold=True).pack(anchor="w", pady=(0, 14))
         day_row = tk.Frame(schedule, bg=PAPER)
         day_row.pack(fill="x", pady=(0, 10))
-        self.button(day_row, "‹", lambda: self.shift_day(-1)).pack(side="left")
-        day_entry = ttk.Entry(day_row, textvariable=self.day_var, width=12)
-        day_entry.pack(side="left", padx=5, fill="x", expand=True)
+        previous = self.button(day_row, "‹", lambda: self.shift_day(-1))
+        previous.configure(padx=6, pady=5)
+        previous.pack(side="left")
+        day_entry = ttk.Entry(day_row, textvariable=self.day_var, width=10)
+        day_entry.pack(side="left", padx=4, fill="x", expand=True)
         day_entry.bind("<Return>", lambda _event: self.refresh_events())
-        self.button(day_row, "›", lambda: self.shift_day(1)).pack(side="left")
-        self.button(day_row, "조회", self.refresh_events).pack(side="left", padx=(5, 0))
+        following = self.button(day_row, "›", lambda: self.shift_day(1))
+        following.configure(padx=6, pady=5)
+        following.pack(side="left")
+        refresh = self.button(day_row, "조회", self.refresh_events)
+        refresh.configure(padx=6, pady=5)
+        refresh.pack(side="left", padx=(4, 0))
         tree_area = tk.Frame(schedule, bg=PAPER)
-        self.tree = ttk.Treeview(tree_area, columns=("time", "title"), show="headings", selectmode="browse", height=5)
+        self.tree = ttk.Treeview(tree_area, columns=("time", "title"), show="headings", selectmode="browse", height=4, style="Calendar.Treeview")
         self.tree.heading("time", text="시작")
         self.tree.heading("title", text="일정 이름")
         self.tree.column("time", width=64, minwidth=60, stretch=False)
-        self.tree.column("title", width=200, minwidth=100)
+        self.tree.column("title", width=150, minwidth=100)
         tree_scroll = ttk.Scrollbar(tree_area, command=self.tree.yview)
         self.tree.configure(yscrollcommand=tree_scroll.set)
         self.tree.pack(side="left", fill="both", expand=True)
         tree_scroll.pack(side="right", fill="y")
         self.calendar_empty = tk.Frame(tree_area, bg=PAPER, padx=12, pady=12)
-        self.label(self.calendar_empty, "✦", size=24, color="#c6b8f6").pack(anchor="center")
-        self.label(self.calendar_empty, "가볍게 시작하는 하루", size=11, bold=True).pack(anchor="center", pady=(8, 5))
-        self.label(self.calendar_empty, "새로운 일정을 추가해 보세요.", size=9, color=MUTED).pack(anchor="center")
-        self.event_detail = tk.StringVar(value="일정을 선택하면 종료 시간을 볼 수 있어요.")
-        detail_label = tk.Label(schedule, textvariable=self.event_detail, bg=PAPER, fg=MUTED, font=("Malgun Gothic", 9), wraplength=360, justify="left", anchor="w")
+        self.label(self.calendar_empty, "일정 없음", size=10, color=MUTED).pack(anchor="center")
+        self.event_detail = tk.StringVar()
+        detail_label = tk.Label(schedule, textvariable=self.event_detail, bg=PAPER, fg=MUTED, font=("Malgun Gothic", 9), wraplength=260, justify="left", anchor="w")
         self.tree.bind("<<TreeviewSelect>>", self._event_selected)
         actions = tk.Frame(schedule, bg=PAPER)
         actions.pack(side="bottom", fill="x")
@@ -263,25 +256,14 @@ class LunaApp:
         self.button(actions, "+ 일정", self.open_event, primary=True).pack(side="left")
         self.button(actions, "삭제", self.delete_event).pack(side="left", padx=6)
         self.button(actions, "내보내기", self.export_calendar).pack(side="right")
-        footer = self.label(self.root, "목소리 · 볼륨 · 프로그램 · 대화 기억을 상단 설정에서 나에게 맞게 바꿔 보세요.", size=9, color=MUTED)
-        footer.grid(row=2, column=0, sticky="w", padx=28, pady=(14, 18))
         self.entry.focus_set()
 
-    @staticmethod
-    def _draw_orb(event):
-        canvas = event.widget
-        canvas.delete("all")
-        x, y = event.width / 2, event.height / 2
-        outer = min(30, max(10, y - 2))
-        for radius, color in [(outer, "#f3f0ff"), (outer * .8, "#e5ddff"), (outer * .6, "#b7a5f4")]:
-            canvas.create_oval(x-radius, y-radius, x+radius, y+radius, fill=color, outline="")
-        canvas.create_text(x, y, text="✦", fill="white", font=("Segoe UI", max(12, round(outer * .73))))
-
-    def _resize_layout(self, event):
-        if event.widget is self.root:
-            height = 30 if event.height < 700 else 65
-            if int(self.orb.cget("height")) != height:
-                self.orb.configure(height=height)
+    def _tab_changed(self, _event=None):
+        selected = self.main_tabs.select()
+        if selected == str(self.search_panel):
+            self.search_panel.entry.focus_set()
+        elif selected == str(self.chat_page):
+            self.entry.focus_set()
 
     def append_message(self, speaker, text):
         self.chat.configure(state="normal")
@@ -302,7 +284,7 @@ class LunaApp:
                 self.append_message("나", turn["user"])
                 self.append_message("루나", turn["assistant"])
         else:
-            self.append_message("루나", "안녕하세요. 당신의 개인 비서 루나예요. 일정을 정리하거나 PC를 제어해 보세요.")
+            self.append_message("루나", "안녕하세요. 루나예요.")
 
     def new_conversation(self, *, confirm=True):
         if self.command_busy:
@@ -322,7 +304,9 @@ class LunaApp:
         return True
 
     def apply_settings(self):
+        previous = self.settings
         self.settings = load_settings(self.data_dir)
+        self.search_panel.reflect_settings([key for key in ("search_provider", "search_kind") if previous.get(key) != self.settings.get(key)])
         changed = self.service.sync_settings(self.settings)
         self.speak_var.set(self.settings.get("speak", True))
         self.voice_var.set(self.settings.get("voice", ""))
@@ -457,8 +441,7 @@ class LunaApp:
                 self.clear_attachments()
             if self.config_dialog is not None and self.config_dialog.winfo_exists():
                 self.config_dialog.reflect_settings(result["settings_changed"])
-            if self.search_dialog is not None and self.search_dialog.winfo_exists():
-                self.search_dialog.reflect_settings(result["settings_changed"])
+            self.search_panel.reflect_settings(result["settings_changed"])
         self.append_message("루나", result["message"])
         if not result.get("ui_actions"):
             self.say(result["message"])
@@ -601,12 +584,12 @@ class LunaApp:
             self.config_dialog.notebook.select({"ai": 0, "programs": 1, "sound": 2, "windows": 3}[tab])
 
     def open_search(self, spec=None):
-        from .search_dialog import SearchDialog
-        if self.search_dialog is not None and self.search_dialog.winfo_exists():
-            self.search_dialog.close()
-        self.search_dialog = SearchDialog(self, spec)
         if spec:
-            self.search_dialog.search()
+            self.search_panel.set_spec(spec)
+            self.search_panel.search()
+        else:
+            self.main_tabs.select(self.search_panel)
+            self.search_panel.entry.focus_set()
 
     def choose_attachments(self):
         if self.command_busy:
@@ -659,9 +642,9 @@ class LunaApp:
     def refresh_attachments(self):
         if self.attachments:
             names = ", ".join(item.name for item in self.attachments)
-            self.attachment_note.set(f"첨부 {len(self.attachments)}개 · {names[:90]}\n클릭하면 목록/읽기 안내 · 명확한 앱 명령·검색도 사용할 수 있어요")
+            self.attachment_note.set(f"첨부 {len(self.attachments)}개 · {names[:90]}")
         else:
-            self.attachment_note.set("첨부한 파일은 현재 대화에서만 유지됩니다.")
+            self.attachment_note.set("첨부 없음")
         if self.attachment_dialog is not None and self.attachment_dialog.winfo_exists():
             self.attachment_dialog.refresh()
 
@@ -693,7 +676,7 @@ class LunaApp:
         self.tree.delete(*self.tree.get_children())
         for event in events:
             self.tree.insert("", "end", iid=event["id"], values=(event["start"][11:], event["title"]))
-        self.event_detail.set(f"일정 {len(events)}개 · 선택하면 전체 시간을 볼 수 있어요." if events else "이 날은 저장된 일정이 없어요. + 일정으로 추가해 보세요.")
+        self.event_detail.set(f"일정 {len(events)}개" if events else "")
         if events:
             self.calendar_empty.place_forget()
         else:
@@ -980,6 +963,7 @@ class LunaApp:
         name = self.selected_voice() if name is None else name
         if not name:
             self.voice_note.set("사용할 음성이 없어요. 설정 → 소리 · 음성에서 로컬 음성을 설치하거나 목소리를 선택하고 저장하세요.")
+            self.status_var.set("음성 출력 준비 필요 · 설정에서 목소리를 선택하세요.")
             return
         if self.listening or self.audio_checking:
             return
@@ -1019,7 +1003,6 @@ class LunaApp:
         self.callbacks.clear()
         self.last_dialog = None
         self.config_dialog = None
-        self.search_dialog = None
         self.attachment_dialog = None
         self.attachments = []
         self.root.after_cancel(self._poll_id)

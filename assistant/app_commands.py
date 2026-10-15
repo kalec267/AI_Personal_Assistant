@@ -7,7 +7,7 @@ from .programs import name_key
 from .settings import check_voice_speed
 
 UI_ACTIONS = {
-    "open_settings": "설정 열기", "open_search": "검색 창 열기", "add_event": "일정 작성 창 열기",
+    "open_settings": "설정 열기", "open_search": "검색 탭 열기", "add_event": "일정 작성 창 열기",
     "attach_files": "첨부 파일 선택", "show_attachments": "첨부 목록 열기", "clear_attachments": "첨부 비우기",
     "remove_attachment": "첨부 제거", "summarize_attachments": "첨부 요약", "new_conversation": "새 대화 시작",
     "stop_speech": "음성 출력 중지", "test_voice": "목소리 미리 듣기", "install_voice": "로컬 음성 설치",
@@ -295,7 +295,7 @@ def parse_app_command(text, options, view=None):
         r"첨부(?:파일|자료)?(?:목록)?(?:을|를)?(?:보여줘|열어줘)": ("control_app", {"action": "show_attachments"}),
         r"첨부(?:파일|자료)?(?:를|을)?요약" + suffix: ("control_app", {"action": "summarize_attachments"}),
         r"일정(?:작성|추가)(?:창)?(?:을|를)?열어(?:줘|주세요)?": ("control_app", {"action": "add_event"}),
-        r"(?:검색|뉴스검색)(?:창)?(?:을|를)?열어(?:줘|주세요)?": ("control_app", {"action": "open_search"}),
+        r"(?:검색|뉴스검색)(?:창|탭)?(?:을|를)?열어(?:줘|주세요)?": ("control_app", {"action": "open_search"}),
         r"(?:API|에이피아이)키(?:을|를)?(?:설정|등록|입력)" + suffix: ("control_app", {"action": "manage_api_key"}),
         r"(?:API|에이피아이)키(?:을|를)?삭제" + suffix: ("control_app", {"action": "delete_api_key"}),
         r"(?:마이크켜|음성인식시작)(?:줘|주세요)?": ("control_app", {"action": "listen"}),

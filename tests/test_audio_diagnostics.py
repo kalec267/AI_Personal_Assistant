@@ -22,7 +22,7 @@ class AudioTests(unittest.TestCase):
             with patch.object(LocalVoice, "ready", return_value=True):
                 self.assertEqual(preferred_voice(LocalVoice(folder).list()), "local:F1")
 
-    def test_manual_capture_announces_readiness_after_calibration_and_before_listening(self):
+    def test_manual_capture_announces_readiness_before_listening(self):
         sr = MagicMock()
         events = []
         recognizer = sr.Recognizer.return_value
@@ -32,10 +32,9 @@ class AudioTests(unittest.TestCase):
         with patch("assistant.voice.importlib.import_module", return_value=sr):
             result = recognize_once(progress=events.append)
         self.assertEqual(result, "오늘 일정 보여줘")
-        self.assertEqual(events[1], "calibrated")
-        self.assertIn("지금 말씀하세요", events[2])
-        self.assertEqual(events[3], "listen")
-        self.assertIn("변환", events[4])
+        self.assertIn("지금 말씀하세요", events[1])
+        self.assertEqual(events[2], "listen")
+        self.assertIn("변환", events[3])
 
     def test_device_open_failure_is_actionable_before_listening_or_upload(self):
         sr = SimpleNamespace(Microphone=MagicMock(), Recognizer=MagicMock(), WaitTimeoutError=TimeoutError)
