@@ -1,4 +1,5 @@
 import datetime as dt
+import gc
 import json
 import os
 import tempfile
@@ -206,11 +207,41 @@ class NativeUITests(unittest.TestCase):
         self.assertEqual(self.app.callbacks, {})
         callback.assert_not_called()
 
+    def test_closed_tk_variable_cycle_is_not_finalized_by_document_worker(self):
+        import sys
+        failures, collectors = [], []
+        variable = tk.StringVar(master=self.root, value="닫힌 설정")
+        cycle = [variable]
+        cycle.append(cycle)
+        del variable, cycle
+        main_thread = threading.get_ident()
+        def on_gc(phase, _info):
+            if phase == "start":
+                collectors.append(threading.get_ident())
+        def allocate():
+            # Parsing documents allocates many temporary cyclic containers.
+            for _ in range(5000):
+                item = []
+                item.append(item)
+            return True
+        gc.callbacks.append(on_gc)
+        try:
+            with patch.object(sys, "unraisablehook", side_effect=failures.append):
+                done = []
+                self.app.run_task(allocate, done.append)
+                self.wait_for(lambda: bool(done))
+                gc.collect()
+            self.assertFalse(failures)
+            self.assertTrue(collectors)
+            self.assertTrue(all(thread == main_thread for thread in collectors))
+        finally:
+            gc.callbacks.remove(on_gc)
+
     def test_main_window_has_one_settings_entry_and_no_sound_controls(self):
         self.root.geometry("960x620")
         self.root.update()
         bottom = self.root.winfo_rooty() + self.root.winfo_height()
-        for widget in (self.app.entry, self.app.send_button, self.app.settings_button):
+        for widget in (self.app.entry, self.app.send_button, self.app.settings_button, self.app.attach_button, self.app.summary_button, self.app.search_button):
             self.assertTrue(widget.winfo_ismapped())
             self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(), bottom)
         self.assertEqual(self.app.settings_button.cget("text"), "설정")
@@ -265,6 +296,7 @@ class NativeUITests(unittest.TestCase):
         self.assertEqual([dialog.notebook.tab(tab, "text") for tab in dialog.notebook.tabs()], ["AI · 대화", "프로그램", "소리 · 음성", "Windows 제어"])
         dialog.mode.set("Ollama 로컬 · API 키 불필요")
         dialog.model.set("qwen3:4b")
+        dialog.vision_model.set("gemma3:4b")
         dialog.voice_var.set("local:F4")
         dialog.speak.set(False)
         dialog.volume.set(42.8)
@@ -293,7 +325,52 @@ class NativeUITests(unittest.TestCase):
         self.assertTrue(restored.remember.get())
         self.assertEqual(restored.history_turns.get(), 4)
         self.assertTrue(restored.windows_access.get())
+        self.assertEqual(restored.vision_model.get(), "gemma3:4b")
         restored.close()
+
+    def test_attach_real_document_summarize_follow_up_and_clear(self):
+        path = Path(self.temp.name) / "실적.txt"
+        path.write_text("올해 매출은 100억원이며 전년 대비 20% 증가했습니다.", encoding="utf-8")
+        save_settings(self.temp.name, "", False, ai_mode="local", ollama_model="qwen3:4b")
+        with patch("assistant.app.filedialog.askopenfilenames", return_value=(str(path),)):
+            self.app.choose_attachments()
+            self.wait_for(lambda: not self.app.command_busy)
+        self.assertEqual(self.app.attachments[0].name, "실적.txt")
+        self.assertIsNotNone(self.app.attachment_dialog)
+        with patch.object(self.app.service.ollama, "request", return_value={"content": "매출 100억원, 20% 성장", "calls": []}) as request:
+            self.app.summary_button.invoke()
+            self.wait_for(lambda: not self.app.command_busy)
+            self.assertIn("100억원", request.call_args.kwargs["context"])
+            self.assertTrue(request.call_args.kwargs["analysis"])
+            self.app.submit("성장률은 얼마야?")
+            self.wait_for(lambda: not self.app.command_busy)
+            self.assertIn("20% 성장", request.call_args.kwargs["history"][-1]["content"])
+        self.assertIn("100억원", self.app.chat.get("1.0", "end"))
+        self.root.geometry("960x620")
+        self.root.update()
+        self.assertLessEqual(self.app.send_button.winfo_rooty() + self.app.send_button.winfo_height(), self.root.winfo_rooty() + self.root.winfo_height())
+        self.assertTrue(self.app.privacy_note.winfo_ismapped())
+        panel = self.app.privacy_note.master
+        self.assertLessEqual(self.app.privacy_note.winfo_rooty() + self.app.privacy_note.winfo_height(), panel.winfo_rooty() + panel.winfo_height() - 10)
+        self.app.clear_attachments()
+        self.assertEqual(self.app.attachments, [])
+        self.assertEqual(self.app.attachment_dialog.items.get_children(), ())
+        self.app.attachment_dialog.close()
+
+    def test_native_search_works_without_ai_and_remembers_service_and_filter(self):
+        with patch("assistant.search.webbrowser.open", return_value=True) as browser, patch.object(self.app.service.ollama, "request") as ai:
+            self.app.submit("네이버에서 인공지능 동영상 찾아줘")
+            self.wait_for(lambda: self.app.search_dialog is not None and "열기를 요청" in self.app.search_dialog.feedback.get())
+            self.assertIn("search.naver.com", browser.call_args.args[0])
+            self.assertIn("where=video", browser.call_args.args[0])
+            ai.assert_not_called()
+        self.assertEqual(load_settings(self.temp.name)["search_provider"], "naver")
+        self.assertEqual(load_settings(self.temp.name)["search_kind"], "video")
+        self.app.search_dialog.close()
+        self.app.open_search()
+        self.assertEqual(self.app.search_dialog.provider.get(), "네이버")
+        self.assertEqual(self.app.search_dialog.kind.get(), "동영상")
+        self.app.search_dialog.close()
 
     def test_windows_command_review_shows_full_script_and_requires_click(self):
         from assistant.command_dialog import CommandDialog

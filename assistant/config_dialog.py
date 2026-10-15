@@ -37,6 +37,7 @@ class ConfigDialog(tk.Toplevel):
         options = load_settings(app.data_dir)
         self.mode = tk.StringVar(value=next(label for label, value in MODES.items() if value == options.get("ai_mode", "off")))
         self.model = tk.StringVar(value=options.get("ollama_model", "qwen3:4b"))
+        self.vision_model = tk.StringVar(value=options.get("vision_model", ""))
         self.key = tk.StringVar()
         self.persist = tk.BooleanVar(value=os.name == "nt")
         self.remember = tk.BooleanVar(value=options.get("remember_chat", False))
@@ -90,6 +91,9 @@ class ConfigDialog(tk.Toplevel):
         ttk.Label(frame, text="모델 이름").pack(anchor="w")
         ttk.Entry(frame, textvariable=self.model).pack(fill="x", pady=(5, 10))
         ttk.Label(frame, text="로컬: qwen3:4b · 클라우드: gpt-oss:120b\n로컬 모드는 Ollama 설치 후 모델 다운로드가 필요합니다.", wraplength=580).pack(anchor="w", pady=(0, 12))
+        ttk.Label(frame, text="이미지 분석 모델 · 빈칸이면 위 모델 사용").pack(anchor="w")
+        ttk.Entry(frame, textvariable=self.vision_model).pack(fill="x", pady=(5, 8))
+        ttk.Label(frame, text="이미지 입력 지원 모델이 필요합니다. 로컬 예: gemma3:4b\n별도로 ollama pull gemma3:4b 실행 후 입력하세요. 클라우드는 해당 계정에서 제공하는 이미지 모델을 지정하세요.", wraplength=580).pack(anchor="w", pady=(0, 12))
         ttk.Label(frame, text="Ollama API 키 · 클라우드에서만 사용").pack(anchor="w")
         ttk.Entry(frame, textvariable=self.key, show="●").pack(fill="x", pady=5)
         ttk.Checkbutton(frame, text="이 Windows 사용자에 키 암호화 저장", variable=self.persist).pack(anchor="w")
@@ -220,8 +224,11 @@ class ConfigDialog(tk.Toplevel):
     def save(self):
         try:
             model = self.model.get().strip()
+            vision_model = self.vision_model.get().strip()
             if self.mode.get() not in MODES or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:-]{0,119}", model):
                 raise UserError("올바른 연결 방식과 모델 이름을 입력하세요.")
+            if vision_model and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:-]{0,119}", vision_model):
+                raise UserError("이미지 분석 모델 이름을 확인하세요.")
             turns, volume = self.history_turns.get(), round(self.volume.get())
             if not 1 <= turns <= 20 or not 0 <= volume <= 100:
                 raise UserError("최근 대화 수는 1~20, 볼륨은 0~100으로 설정하세요.")
@@ -230,7 +237,7 @@ class ConfigDialog(tk.Toplevel):
                 self.key.set("")
             save_settings(self.app.data_dir, self.voice_var.get(), self.speak.get(), ai_mode=MODES[self.mode.get()],
                           ollama_model=model, remember_chat=self.remember.get(), history_turns=turns,
-                          volume=volume, apply_volume_on_start=self.start_volume.get(), windows_control=self.windows_access.get())
+                          volume=volume, apply_volume_on_start=self.start_volume.get(), windows_control=self.windows_access.get(), vision_model=vision_model)
             self.app.apply_settings()
             self.feedback.set("사용자 설정 저장 완료 · " + self.app.service.credentials.status())
             self.save_feedback.set("사용자 설정을 저장했어요. 재실행 후에도 유지됩니다.")

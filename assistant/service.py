@@ -14,6 +14,8 @@ from .ollama import Ollama
 from .programs import Programs
 from .settings import load_settings
 from .history import ConversationMemory
+from .attachments import validate_attachments
+from .search import parse_search
 
 
 class AssistantService:
@@ -49,12 +51,25 @@ class AssistantService:
         end = (day + dt.timedelta(days=1)).isoformat() + "T00:00"
         return [event for event in self.calendar.list() if event["start"] < end and event["end"] > start]
 
-    def execute(self, text):
+    def execute(self, text, *, attachments=(), progress=None):
         options = load_settings(self.data_dir)
         self.sync_settings(options)
+        if not isinstance(text, str) or not 1 <= len(text.strip()) <= 500:
+            raise UserError("명령을 1~500자로 입력하세요.")
+        if attachments:
+            validate_attachments(attachments)
+            if options.get("ai_mode", "off") == "off":
+                raise UserError("첨부 분석에는 Ollama가 필요해요. 설정 → AI · 대화에서 로컬 또는 클라우드를 선택하세요.")
+            return self._interpret(text, options, attachments=attachments, progress=progress)
+        search = parse_search(text, options.get("search_provider", "google"), options.get("search_kind", "web"))
+        if search:
+            result = {"message": search["label"] + " 결과 페이지를 준비했어요.", "search": search}
+            if options.get("ai_mode", "off") != "off":
+                with self._lock:
+                    return self._remember(text, result, self.history.generation,
+                                          search["label"] + " 결과 페이지 열기를 준비했습니다. 기사·영상 내용은 조회하지 않았습니다.")
+            return result
         if options.get("ai_mode", "off") != "off":
-            if not isinstance(text, str) or not 1 <= len(text.strip()) <= 500:
-                raise UserError("명령을 1~500자로 입력하세요.")
             # Use the model for the entire utterance, so multi-step requests are
             # not partially executed by the old keyword parser.
             return self._interpret(text, options)
@@ -78,7 +93,7 @@ class AssistantService:
                     "클라우드 키는 그 창의 ‘Ollama API 키’에 입력하세요.", "open_settings": True}
         return {"message": message}
 
-    def _interpret(self, text, options):
+    def _interpret(self, text, options, *, attachments=(), progress=None):
         mode = options.get("ai_mode", "local")
         model = options.get("ollama_model") or ("gpt-oss:120b" if mode == "cloud" else "qwen3:4b")
         with self._lock:
@@ -87,11 +102,24 @@ class AssistantService:
             generation, turns = self.history.snapshot()
         messages = [message for turn in turns for message in (
             {"role": "user", "content": turn["user"]}, {"role": "assistant", "content": turn["assistant"]})]
-        result = self.ollama.request(mode, model, text, self.programs.catalog(), history=messages,
-                                     allow_windows=options.get("windows_control", False))
+        if attachments:
+            analysis_model = (options.get("vision_model") or model) if any(item.image for item in attachments) else model
+            result = self.ollama.analyze(mode, analysis_model, text, attachments, history=messages, progress=progress,
+                                         cancelled=lambda: generation != self.history.snapshot()[0])
+        else:
+            result = self.ollama.request(mode, model, text, self.programs.catalog(), history=messages,
+                                         allow_windows=options.get("windows_control", False))
         with self._lock:
             if generation != self.history.generation:
                 raise UserError("대화나 연결 설정이 변경되어 이전 응답을 취소했어요. 다시 요청해 주세요.")
+            if attachments:
+                if result["calls"]:
+                    raise UserError("첨부 분석 중 PC 동작을 실행하지 않았습니다.")
+                names = ", ".join(item.name for item in attachments)
+                limitations = "\n".join(dict.fromkeys(item.note for item in attachments if item.note))
+                message = result["content"] + ("\n\n[첨부 읽기 안내]\n" + limitations if limitations else "")
+                context = ("[첨부 읽기 안내] " + limitations + "\n" if limitations else "") + result["content"]
+                return self._remember(f"{text} [첨부: {names[:160]}]", {"message": message}, generation, context)
             return self._interpret_result(text, result, generation)
 
     def _remember(self, text, result, generation, context=None):

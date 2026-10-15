@@ -6,6 +6,7 @@ import webbrowser
 
 from . import desktop, windows_control
 from .core import UserError
+from .search import search_spec, open_search
 
 
 def website_url(value):
@@ -43,7 +44,7 @@ def validate_calls(calls, programs, *, allow_windows=False):
             raise UserError("AI 동작 인자가 올바르지 않아요.")
         allowed = {"launch_program": {"app_id"}, "set_volume": {"mode", "value"}, "open_website": {"url"},
                    "media_control": {"command"}, "create_event": {"title", "start", "end"}, "list_events": {"day"},
-                   "run_windows_command": {"command", "description"}}
+                   "run_windows_command": {"command", "description"}, "search_web": {"query", "provider", "kind"}}
         if not isinstance(name, str) or name not in allowed or args.keys() - allowed[name]:
             raise UserError("지원하지 않는 동작이나 인자가 포함되어 실행하지 않았어요.")
         if name == "launch_program":
@@ -77,6 +78,9 @@ def validate_calls(calls, programs, *, allow_windows=False):
             except ValueError:
                 raise UserError("AI 일정 날짜·시간이 올바르지 않아요. 구체적인 날짜와 시간을 다시 알려 주세요.") from None
             summary = f"일정 초안: {args['title']} · {args['start']} — {args['end']}"
+        elif name == "search_web":
+            spec = search_spec(args.get("query"), args.get("provider"), args.get("kind"))
+            summary = "검색 결과 열기: " + spec["label"]
         elif name == "run_windows_command":
             if not allow_windows:
                 raise UserError("Windows 고급 제어가 꺼져 있어요. 설정 → Windows 제어에서 켜고 저장하세요.")
@@ -112,6 +116,8 @@ def perform(action, programs, *, allow_windows=False):
         return "웹사이트 열기를 요청했어요."
     if name == "media_control":
         return desktop.media(args["command"])
+    if name == "search_web":
+        return open_search(args["query"], args["provider"], args["kind"])
     if name == "run_windows_command":
         if not allow_windows:
             raise UserError("Windows 고급 제어가 꺼져 있어 실행하지 않았어요.")

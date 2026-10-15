@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import functools
+import gc
 import os
 import queue
 import threading
@@ -69,7 +70,13 @@ class EventDialog(tk.Toplevel):
 
 class LunaApp:
     def __init__(self, root, data_dir, *, voice=None, recognizer=recognize_once, load_voices=True):
+        # Tk objects in unreachable cycles must be finalized on the UI thread.
+        # Automatic cyclic GC can otherwise run during document parsing or an
+        # HTTP response on a worker. This GUI process collects cycles explicitly.
+        gc.disable()
+        gc.collect()
         self.root = root
+        self.gc_ticks = 0
         self.data_dir = Path(data_dir)
         self.service = AssistantService(data_dir)
         self.voice = voice or VoiceRouter(data_dir)
@@ -85,6 +92,11 @@ class LunaApp:
         self.installing_voice = False
         self.last_dialog = None
         self.config_dialog = None
+        self.search_dialog = None
+        self.attachment_dialog = None
+        self.attachments = []
+        self.analysis_progress = queue.Queue()
+        self.attachment_note = tk.StringVar(value="첨부한 파일은 현재 대화에서만 유지됩니다.")
         self.mode_var = tk.StringVar(value={"off": "기본 명령", "local": "Ollama 로컬", "cloud": "Ollama 클라우드"}.get(self.settings.get("ai_mode", "off"), "기본 명령") + " · 데스크톱")
         self.command_var = tk.StringVar()
         self.day_var = tk.StringVar(value=dt.date.today().isoformat())
@@ -101,6 +113,7 @@ class LunaApp:
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self._style()
         self._build()
+        self.root.bind("<Configure>", self._resize_layout, add="+")
         self.refresh_events()
         self.render_conversation()
         self._poll_id = self.root.after(60, self._poll)
@@ -144,6 +157,8 @@ class LunaApp:
         self.label(header, "내 일상에, 조금 더 여유를.", size=10, color=MUTED).pack(side="left", padx=22)
         self.settings_button = self.button(header, "설정", self.open_config)
         self.settings_button.pack(side="right")
+        self.search_button = self.button(header, "뉴스·동영상 검색", self.open_search)
+        self.search_button.pack(side="right", padx=8)
         tk.Label(header, textvariable=self.mode_var, bg=BG, fg=BLUE, font=("Malgun Gothic", 9)).pack(side="right", padx=15)
         body = tk.Frame(self.root, bg=BG, padx=28)
         body.grid(row=1, column=0, sticky="nsew")
@@ -152,13 +167,15 @@ class LunaApp:
         body.rowconfigure(0, weight=1)
         left = self.panel(body, "01 / ASSISTANT", "오늘도 함께할게요.")
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
-        orb = tk.Canvas(left, height=105, bg=PAPER, highlightthickness=0)
+        orb = tk.Canvas(left, height=65, bg=PAPER, highlightthickness=0)
+        self.orb = orb
         orb.pack(fill="x")
         orb.bind("<Configure>", self._draw_orb)
         tk.Label(left, textvariable=self.status_var, bg=PAPER, fg=MUTED, font=("Malgun Gothic", 9), wraplength=460).pack(pady=(0, 12))
-        transcript = tk.Frame(left, bg=PAPER)
+        transcript = tk.Frame(left, bg=PAPER, height=1)
+        transcript.pack_propagate(False)
         transcript.pack(fill="both", expand=True)
-        self.chat = tk.Text(transcript, bg="#f7f8fc", fg=INK, relief="flat", bd=0, wrap="word", font=("Malgun Gothic", 11), padx=15, pady=12, height=8, state="disabled")
+        self.chat = tk.Text(transcript, bg="#f7f8fc", fg=INK, relief="flat", bd=0, wrap="word", font=("Malgun Gothic", 11), padx=15, pady=12, height=4, state="disabled")
         scroll = ttk.Scrollbar(transcript, command=self.chat.yview)
         self.chat.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
@@ -167,9 +184,20 @@ class LunaApp:
         self.chat.tag_configure("오류", foreground="#b04b65")
         suggestions = tk.Frame(left, bg=PAPER)
         suggestions.pack(fill="x", pady=10)
-        self.button(suggestions, "내일 회의 일정 추가", lambda: self.submit("내일 오후 3시 팀 회의 일정 추가")).pack(side="left", padx=(0, 7))
+        self.button(suggestions, "회의 일정 추가", lambda: self.submit("내일 오후 3시 팀 회의 일정 추가")).pack(side="left", padx=(0, 7))
         self.button(suggestions, "오늘 일정", lambda: self.submit("오늘 일정 보여줘")).pack(side="left")
         self.button(suggestions, "새 대화", self.new_conversation).pack(side="right")
+        attachment_row = tk.Frame(left, bg=PAPER)
+        attachment_row.pack(fill="x", pady=(0, 6))
+        self.attach_button = self.button(attachment_row, "파일 첨부", self.choose_attachments)
+        self.attach_button.pack(side="left")
+        self.summary_button = self.button(attachment_row, "첨부 요약", self.summarize_attachments)
+        self.summary_button.pack(side="left", padx=6)
+        self.button(attachment_row, "비우기", self.clear_attachments).pack(side="right")
+        attachment_label = tk.Label(left, textvariable=self.attachment_note, bg=PAPER, fg=BLUE, wraplength=450,
+                                    justify="left", anchor="w", font=("Malgun Gothic", 8), cursor="hand2")
+        attachment_label.pack(fill="x", pady=(0, 7))
+        attachment_label.bind("<Button-1>", lambda _event: self.open_attachments())
         input_row = tk.Frame(left, bg=PAPER)
         input_row.pack(fill="x")
         self.entry = ttk.Entry(input_row, textvariable=self.command_var)
@@ -179,9 +207,10 @@ class LunaApp:
         self.mic_button.pack(side="left", padx=6)
         self.send_button = self.button(input_row, "보내기", self.submit, primary=True)
         self.send_button.pack(side="left")
-        note = self.label(left, "마이크는 클릭할 때만 켜져요. 인식한 문장을 확인하고 보내세요.\n음성 인식 시 Google 음성 서비스에 오디오가 전송됩니다.", size=8, color=MUTED)
+        note = self.label(left, "마이크: Google 음성 서비스에 오디오 전송.\nOllama 클라우드: 첨부에서 읽은 내용·이미지도 전송됩니다.", size=8, color=MUTED)
         note.configure(wraplength=470)
         note.pack(anchor="w", pady=(9, 0))
+        self.privacy_note = note
         right = tk.Frame(body, bg=BG)
         right.grid(row=0, column=1, sticky="nsew")
         right.columnconfigure(0, weight=1)
@@ -224,10 +253,17 @@ class LunaApp:
     def _draw_orb(event):
         canvas = event.widget
         canvas.delete("all")
-        x = event.width / 2
-        for radius, color in [(48, "#eef1ff"), (38, "#dce3ff"), (29, "#bdccfc")]:
-            canvas.create_oval(x-radius, 52-radius, x+radius, 52+radius, fill=color, outline="")
-        canvas.create_text(x, 51, text="✦", fill="white", font=("Segoe UI", 28))
+        x, y = event.width / 2, event.height / 2
+        outer = min(30, max(10, y - 2))
+        for radius, color in [(outer, "#eef1ff"), (outer * .8, "#dce3ff"), (outer * .6, "#bdccfc")]:
+            canvas.create_oval(x-radius, y-radius, x+radius, y+radius, fill=color, outline="")
+        canvas.create_text(x, y, text="✦", fill="white", font=("Segoe UI", max(12, round(outer * .73))))
+
+    def _resize_layout(self, event):
+        if event.widget is self.root:
+            height = 30 if event.height < 700 else 65
+            if int(self.orb.cget("height")) != height:
+                self.orb.configure(height=height)
 
     def append_message(self, speaker, text):
         self.chat.configure(state="normal")
@@ -236,7 +272,7 @@ class LunaApp:
         if int(self.chat.index("end-1c").split(".")[0]) > 500:
             self.chat.delete("1.0", "100.0")
         self.chat.configure(state="disabled")
-        self.chat.see("end")
+        self.chat.see("end-3c")
 
     def render_conversation(self):
         self.chat.configure(state="normal")
@@ -263,6 +299,7 @@ class LunaApp:
             self.show_error(UserError("저장된 대화를 지우지 못했어요. 데이터 폴더 권한을 확인해 주세요."))
             return False
         self.render_conversation()
+        self.clear_attachments()
         self.status_var.set("새 대화를 시작했어요.")
         return True
 
@@ -278,11 +315,14 @@ class LunaApp:
             self.voice_note.set(self._voice_description(self.selected_voice()))
         if changed:
             self.render_conversation()
+            self.attachments = []
+            self.refresh_attachments()
             self.status_var.set("연결 방식 또는 모델이 바뀌어 새 대화를 시작했어요.")
 
     def run_task(self, work, success, error=None):
         # Keep every Tk callback on the UI thread. Workers must hold no Tk objects,
         # even indirectly: releasing a final Tk reference off-thread can abort Tcl.
+        gc.collect()
         self.next_job += 1
         identifier = self.next_job
         self.callbacks[identifier] = (success, error or self.show_error)
@@ -299,6 +339,14 @@ class LunaApp:
     def _poll(self):
         if self.closed:
             return
+        self.gc_ticks += 1
+        if self.gc_ticks % 20 == 0:
+            gc.collect()
+        try:
+            while True:
+                self.status_var.set(self.analysis_progress.get_nowait())
+        except queue.Empty:
+            pass
         try:
             while True:
                 identifier, succeeded, value = self.jobs.get_nowait()
@@ -315,7 +363,7 @@ class LunaApp:
         self._poll_id = self.root.after(60, self._poll)
 
     def show_error(self, error):
-        self.status_var.set(str(error))
+        self.status_var.set(str(error).splitlines()[0][:160] if str(error) else "처리 중 오류가 발생했어요.")
         self.append_message("오류", str(error))
 
     def submit(self, text=None):
@@ -329,7 +377,7 @@ class LunaApp:
         self.send_button.configure(state="disabled")
         self.append_message("나", text)
         self.status_var.set("부탁하신 내용을 확인하고 있어요…")
-        self.run_task(functools.partial(self.service.execute, text), self._command_done, self._command_failed)
+        self.run_task(functools.partial(self.service.execute, text, attachments=tuple(self.attachments), progress=self.analysis_progress.put), self._command_done, self._command_failed)
 
     def _command_failed(self, error):
         self.command_busy = False
@@ -344,6 +392,8 @@ class LunaApp:
         self.say(result["message"])
         if result.get("open_settings"):
             self.open_config()
+        if result.get("search"):
+            self.open_search(result["search"])
         if result.get("draft"):
             self.open_event(result["draft"], result.get("history_turn"))
         if result.get("proposal"):
@@ -370,6 +420,83 @@ class LunaApp:
             self.config_dialog.lift()
             return
         self.config_dialog = ConfigDialog(self)
+
+    def open_search(self, spec=None):
+        from .search_dialog import SearchDialog
+        if self.search_dialog is not None and self.search_dialog.winfo_exists():
+            self.search_dialog.close()
+        self.search_dialog = SearchDialog(self, spec)
+        if spec:
+            self.search_dialog.search()
+
+    def choose_attachments(self):
+        if self.command_busy:
+            return
+        from .attachments import MAX_FILES, read_files
+        filenames = filedialog.askopenfilenames(parent=self.root, title="분석할 문서·이미지 선택 (파일당 최대 20MB)",
+                     filetypes=[("문서·이미지", "*.pdf *.pptx *.ppt *.xlsx *.xls *.docx *.txt *.md *.csv *.json *.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff"), ("모든 파일", "*.*")])
+        if not filenames:
+            return
+        if len(filenames) + len(self.attachments) > MAX_FILES:
+            self.show_error(UserError("첨부는 5개까지 사용할 수 있어요. 기존 첨부를 비우거나 일부를 제거하세요."))
+            return
+        self.command_busy = True
+        self.send_button.configure(state="disabled")
+        self.attach_button.configure(state="disabled")
+        self.status_var.set("첨부 파일에서 텍스트·이미지를 읽고 있어요…")
+        self.run_task(functools.partial(read_files, tuple(filenames)), self.attachments_loaded, self.attachments_failed)
+
+    def summarize_attachments(self):
+        if not self.attachments:
+            self.show_error(UserError("먼저 요약할 문서나 이미지를 첨부하세요."))
+            return
+        self.submit("첨부 자료의 핵심 내용과 중요한 수치·결론을 한국어로 요약해 줘")
+
+    def attachments_loaded(self, result):
+        from .attachments import validate_attachments
+        self.command_busy = False
+        self.send_button.configure(state="normal")
+        self.attach_button.configure(state="normal")
+        errors = list(result["errors"])
+        for item in result["items"]:
+            try:
+                validate_attachments(self.attachments + [item])
+                self.attachments.append(item)
+            except UserError as error:
+                errors.append(f"{item.name}: {error}")
+        self.refresh_attachments()
+        if errors:
+            self.show_error(UserError("\n".join(errors)))
+        else:
+            self.status_var.set("첨부 준비 완료. ‘첨부 요약’을 누르거나 질문을 입력하세요.")
+        self.open_attachments()
+
+    def attachments_failed(self, error):
+        self.command_busy = False
+        self.send_button.configure(state="normal")
+        self.attach_button.configure(state="normal")
+        self.show_error(error)
+
+    def refresh_attachments(self):
+        if self.attachments:
+            names = ", ".join(item.name for item in self.attachments)
+            self.attachment_note.set(f"첨부 {len(self.attachments)}개 · {names[:90]}\n첨부 분석 모드 · 클릭하면 목록/읽기 안내 · PC 명령·검색은 비우기 후 사용")
+        else:
+            self.attachment_note.set("첨부한 파일은 현재 대화에서만 유지됩니다.")
+        if self.attachment_dialog is not None and self.attachment_dialog.winfo_exists():
+            self.attachment_dialog.refresh()
+
+    def clear_attachments(self):
+        if not self.command_busy:
+            self.attachments = []
+            self.refresh_attachments()
+
+    def open_attachments(self):
+        from .attachment_dialog import AttachmentDialog
+        if self.attachment_dialog is not None and self.attachment_dialog.winfo_exists():
+            self.attachment_dialog.lift()
+        else:
+            self.attachment_dialog = AttachmentDialog(self)
 
     def open_event(self, draft=None, turn_id=None):
         if self.last_dialog is not None and self.last_dialog.winfo_exists():
@@ -531,8 +658,12 @@ class LunaApp:
         self.callbacks.clear()
         self.last_dialog = None
         self.config_dialog = None
+        self.search_dialog = None
+        self.attachment_dialog = None
+        self.attachments = []
         self.root.after_cancel(self._poll_id)
         self.root.destroy()
+        gc.collect()
 
 
 def main():
