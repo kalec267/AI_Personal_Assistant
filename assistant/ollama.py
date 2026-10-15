@@ -26,7 +26,7 @@ def tools(catalog, *, allow_windows=False):
             "title": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"}}, ["title", "start", "end"]),
         tool("list_events", "일정 조회. 날짜를 생략하면 전체", {"day": {"type": "string", "description": "YYYY-MM-DD"}}, []),
         tool("search_web", "키워드로 네이버·구글의 전체·뉴스·동영상 검색 결과 페이지 열기. 기사를 직접 읽거나 요약하는 기능은 아님", {
-            "query": {"type": "string", "maxLength": 200}, "provider": {"type": "string", "enum": ["google", "naver"]},
+            "query": {"type": "string", "maxLength": 200, "description": "검색할 핵심 키워드. '삼성에 대한 기사 찾아줘'는 '삼성 기사'. 요청 동사·조사를 제외하고 고유명사·날짜·인용구·검색 연산자는 보존"}, "provider": {"type": "string", "enum": ["google", "naver"]},
             "kind": {"type": "string", "enum": ["web", "news", "video"]}}, ["query", "provider", "kind"]),
     ]
     if allow_windows:

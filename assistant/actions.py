@@ -6,7 +6,7 @@ import webbrowser
 
 from . import desktop, windows_control
 from .core import UserError
-from .search import search_spec, open_search
+from .search import search_spec, search_keywords, open_search
 
 
 def website_url(value):
@@ -80,6 +80,8 @@ def validate_calls(calls, programs, *, allow_windows=False):
             summary = f"일정 초안: {args['title']} · {args['start']} — {args['end']}"
         elif name == "search_web":
             spec = search_spec(args.get("query"), args.get("provider"), args.get("kind"))
+            args = dict(args, query=search_keywords(spec["query"]))
+            spec = search_spec(args["query"], spec["provider"], spec["kind"])
             summary = "검색 결과 열기: " + spec["label"]
         elif name == "run_windows_command":
             if not allow_windows:

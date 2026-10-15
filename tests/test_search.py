@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from assistant.actions import validate_calls, perform
 from assistant.core import UserError
-from assistant.search import search_spec, parse_search, open_search
+from assistant.search import search_spec, parse_search, search_keywords, open_search
 from assistant.service import AssistantService
 from assistant.settings import save_settings
 
@@ -49,6 +49,80 @@ class SearchTests(unittest.TestCase):
             browser.assert_called_once_with(search_spec("경제", "naver", "news")["url"], new=2)
         with patch("assistant.search.webbrowser.open", return_value=False), self.assertRaisesRegex(UserError, "기본 브라우저"):
             open_search("경제")
+
+    def test_spoken_search_extracts_keywords_and_content_kind(self):
+        cases = [
+            ("구글에서 삼성에 대한 기사 찾아줘", "google", "news", "삼성 기사"),
+            ("구글에서 삼성에 대한 기사를 찾아줘", "google", "news", "삼성 기사"),
+            ("네이버에서 삼성에 관한 최신 기사를 좀 찾아주세요.", "naver", "news", "삼성 최신 기사"),
+            ("구글에서 삼성에 관련된 기사 보여줘", "google", "news", "삼성 기사"),
+            ("구글에서 삼성에 대해서 검색해줘", "google", "web", "삼성"),
+            ("네이버에서 전기차에 관한 뉴스를 찾아줘", "naver", "news", "전기차"),
+            ("네이버에서 파이썬 관련된 동영상을 보여주세요", "naver", "video", "파이썬"),
+            ("삼성에 대한 기사 찾아줘", "google", "news", "삼성 기사"),
+            ("구글에서 대한항공에 대한 2026년 10월 기사 찾아줘", "google", "news", "대한항공 2026년 10월 기사"),
+            ("구글에서 가을 사진 검색해줘", "google", "web", "가을 사진"),
+        ]
+        for text, provider, kind, query in cases:
+            with self.subTest(text=text):
+                result = parse_search(text)
+                self.assertIsNotNone(result)
+                self.assertEqual((result["provider"], result["kind"], result["query"]), (provider, kind, query))
+                self.assertEqual(parse_qs(urlsplit(result["url"]).query)["query" if provider == "naver" else "q"], [query])
+
+    def test_exact_phrases_names_and_search_operators_are_preserved(self):
+        cases = [
+            ('구글에서 "삼성에 대한 기사" 검색해줘', '"삼성에 대한 기사"'),
+            ('구글에서 "삼성에 대한 기사"를 검색해줘', '"삼성에 대한 기사"'),
+            ('구글에서 “에 대한” 검색해줘', '“에 대한”'),
+            ('구글에서 대한항공 가을 아를 검색해줘', '대한항공 가을 아를'),
+            ('구글에서 site:news.naver.com 삼성 -주식 after:2026-10-01 검색해줘', 'site:news.naver.com 삼성 -주식 after:2026-10-01'),
+            ('구글에서 "삼성  전자"에 대한 기사 찾아줘', '"삼성  전자" 기사'),
+        ]
+        for text, query in cases:
+            with self.subTest(text=text):
+                self.assertEqual(parse_search(text)["query"], query)
+        # The dedicated search dialog accepts literal keywords, not commands.
+        self.assertEqual(search_spec("삼성에 대한 기사")["query"], "삼성에 대한 기사")
+
+    def test_context_references_and_negated_requests_are_not_literal_searches(self):
+        for text in ("그걸 뉴스로 찾아줘", "구글에서 그거에 대한 기사 찾아줘", "그 내용에 관한 동영상 보여줘",
+                     "구글에서 삼성에 대한 기사 검색하지 마", "삼성에 대한 기사 찾아주지 마"):
+            with self.subTest(text=text):
+                self.assertIsNone(parse_search(text))
+
+    def test_keyword_cleanup_is_repeatable_and_keeps_meaningful_words(self):
+        for query, expected in (("  삼성에  대한   최신 기사  ", "삼성 최신 기사"),
+                                ("AI에 관련된 강의를", "AI 강의"),
+                                ("사과 관련된 기사", "사과 기사"),
+                                ("결과 관련된 기사", "결과 기사"),
+                                ("대한항공", "대한항공"), ('"삼성에 대한 기사"', '"삼성에 대한 기사"')):
+            with self.subTest(query=query):
+                self.assertEqual(search_keywords(query), expected)
+                self.assertEqual(search_keywords(expected), expected)
+
+    def test_service_search_uses_optimized_query_without_calling_ai(self):
+        with tempfile.TemporaryDirectory() as folder:
+            save_settings(folder, "", False, ai_mode="local", ollama_model="qwen3:4b")
+            service = AssistantService(folder)
+            with patch.object(service.ollama, "request") as ai:
+                result = service.execute("구글에서 삼성에 대한 기사 찾아줘")
+                ai.assert_not_called()
+            self.assertEqual(result["search"]["query"], "삼성 기사")
+            self.assertEqual(result["search"]["kind"], "news")
+            self.assertIn("삼성 기사", result["message"])
+
+    def test_ai_search_summary_and_browser_use_the_same_optimized_query(self):
+        with tempfile.TemporaryDirectory() as folder:
+            service = AssistantService(folder)
+            call = {"function": {"name": "search_web", "arguments": {"query": "삼성에 대한 기사", "provider": "google", "kind": "news"}}}
+            action = validate_calls([call], service.programs)[0]
+            self.assertEqual(action["args"]["query"], "삼성 기사")
+            self.assertIn("삼성 기사", action["summary"])
+            self.assertEqual(call["function"]["arguments"]["query"], "삼성에 대한 기사")
+            with patch("assistant.search.webbrowser.open", return_value=True) as browser:
+                perform(action, service.programs)
+            self.assertEqual(parse_qs(urlsplit(browser.call_args.args[0]).query)["q"], ["삼성 기사"])
 
     def test_search_tool_is_validated_and_cannot_change_destination(self):
         with tempfile.TemporaryDirectory() as folder:
